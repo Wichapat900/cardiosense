@@ -1,0 +1,42 @@
+# ─── Data — too large for GitHub ─────────────────────────────────────────────
+AFib_dataset/
+data/
+
+# ─── Trained models ───────────────────────────────────────────────────────────
+# cnn_best.pt is small enough to push if you want (~5MB)
+# rf_pipeline.pkl may be too large (50-200MB) — safer to exclude
+models/saved/rf_pipeline.pkl
+
+# Keep results (plots, JSONs, metrics) — these are small and useful
+# models/results/ ← intentionally NOT ignored
+
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ─── Virtual environment ──────────────────────────────────────────────────────
+venv/
+env/
+.venv/
+.env/
+
+# ─── macOS ────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ─── IDE ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── Jupyter ──────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
