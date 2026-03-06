@@ -188,27 +188,25 @@ def generate_demo_signal(duration_sec=30, mode="normal"):
 # ─── Charts ───────────────────────────────────────────────────────────────────
 
 def plot_ecg_clinical(signal, fs=SAMPLE_RATE, r_peaks=None, title="ECG Lead I", is_afib=False):
+    # Downsample for speed — 1250 points is plenty for display
+    max_pts = 1250
+    if len(signal) > max_pts:
+        step = len(signal) // max_pts
+        signal = signal[::step]
+        if r_peaks:
+            r_peaks = [p // step for p in r_peaks if p // step < len(signal)]
+
     t = np.arange(len(signal)) / fs
-    duration = len(signal) / fs
-    fig = go.Figure()
-
-    for x in np.arange(0, duration + 0.04, 0.04):
-        fig.add_vline(x=x, line=dict(color=COLORS["ecg_grid_min"], width=0.5))
-    for y in np.arange(signal.min() - 0.5, signal.max() + 0.5, 0.1):
-        fig.add_hline(y=y, line=dict(color=COLORS["ecg_grid_min"], width=0.5))
-    for x in np.arange(0, duration + 0.2, 0.2):
-        fig.add_vline(x=x, line=dict(color=COLORS["ecg_grid_maj"], width=1))
-    for y in np.arange(signal.min() - 0.5, signal.max() + 0.5, 0.5):
-        fig.add_hline(y=y, line=dict(color=COLORS["ecg_grid_maj"], width=1))
-
     trace_color = COLORS["ecg_afib"] if is_afib else COLORS["ecg_normal"]
+
+    fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=t, y=signal, mode="lines",
         line=dict(color=trace_color, width=1.4),
         name="ECG",
         hovertemplate="%{x:.3f}s  %{y:.3f}mV<extra></extra>",
     ))
-    if r_peaks:
+    if r_peaks and len(r_peaks) > 0:
         arr = np.array(r_peaks)
         valid = arr[arr < len(signal)]
         fig.add_trace(go.Scatter(
@@ -218,12 +216,24 @@ def plot_ecg_clinical(signal, fs=SAMPLE_RATE, r_peaks=None, title="ECG Lead I", 
             name="R peaks",
             hovertemplate="R peak @ %{x:.3f}s<extra></extra>",
         ))
+
+    # Use Plotly's built-in grid instead of hundreds of vline/hline calls
     fig.update_layout(
         title=dict(text=title, font=dict(family="Inter", size=12, color=COLORS["text_mid"]), x=0.01),
-        xaxis=dict(title="Time (s)", color=COLORS["text_mid"], gridcolor="rgba(0,0,0,0)",
-                   showgrid=False, tickfont=dict(family="JetBrains Mono", size=10, color=COLORS["text_mid"])),
-        yaxis=dict(title="mV", color=COLORS["text_mid"], gridcolor="rgba(0,0,0,0)",
-                   showgrid=False, tickfont=dict(family="JetBrains Mono", size=10, color=COLORS["text_mid"])),
+        xaxis=dict(
+            title="Time (s)", color=COLORS["text_mid"],
+            gridcolor="rgba(210,50,50,0.20)", gridwidth=1,
+            dtick=0.2, showgrid=True,
+            minor=dict(dtick=0.04, gridcolor="rgba(210,50,50,0.08)", showgrid=True),
+            tickfont=dict(family="JetBrains Mono", size=10, color=COLORS["text_mid"]),
+        ),
+        yaxis=dict(
+            title="mV", color=COLORS["text_mid"],
+            gridcolor="rgba(210,50,50,0.20)", gridwidth=1,
+            dtick=0.5, showgrid=True,
+            minor=dict(dtick=0.1, gridcolor="rgba(210,50,50,0.08)", showgrid=True),
+            tickfont=dict(family="JetBrains Mono", size=10, color=COLORS["text_mid"]),
+        ),
         plot_bgcolor=COLORS["ecg_bg"],
         paper_bgcolor=COLORS["panel"],
         legend=dict(bgcolor="rgba(15,31,53,0.8)", bordercolor=COLORS["border"],
@@ -371,8 +381,15 @@ def run_inference(signal, fs=SAMPLE_RATE):
         rmssd   = float(np.sqrt(np.mean(np.diff(rr)**2))) if len(rr) > 2 else 0.0
         cv      = sdnn / mean_rr if mean_rr > 0 else 0.0
         hr      = 60000 / mean_rr if mean_rr > 0 else 0.0
-        prob    = min(0.99, max(0.01, cv * 3 + rmssd / 400))
-        cls     = "Normal" if prob < 0.35 else ("Borderline" if prob < 0.65 else "AFib")
+
+        # Improved heuristic: AFib has high CV (>0.10) AND high RMSSD (>50ms)
+        # Normal sinus: CV ~0.02-0.05, RMSSD ~20-40ms
+        # AFib:         CV ~0.15-0.35, RMSSD ~80-200ms
+        cv_score    = min(1.0, cv / 0.20)          # 0→1 as CV goes 0→0.20
+        rmssd_score = min(1.0, rmssd / 100.0)      # 0→1 as RMSSD goes 0→100ms
+        prob = min(0.97, max(0.03, (cv_score * 0.6 + rmssd_score * 0.4)))
+
+        cls = "Normal" if prob < 0.35 else ("Borderline" if prob < 0.65 else "AFib")
         return {
             "afib_probability": round(prob, 4), "classification": cls,
             "confidence": "Low", "heart_rate": round(hr, 1),
@@ -406,8 +423,13 @@ def sidebar():
 
         st.divider()
         st.markdown('<div class="cs-label">Input Mode</div>', unsafe_allow_html=True)
-        mode = st.radio("", ["Upload ECG File", "Demo — Normal", "Demo — AFib", "Live Serial"],
-                        label_visibility="collapsed")
+
+        # FIX 1: Added non-empty label + label_visibility="collapsed"
+        mode = st.radio(
+            "Input Mode",
+            ["Upload ECG File", "Demo — Normal", "Demo — AFib", "Live Serial"],
+            label_visibility="collapsed"
+        )
 
         st.divider()
         st.markdown('<div class="cs-label">Settings</div>', unsafe_allow_html=True)
@@ -576,10 +598,11 @@ def main():
                     title="ECG Lead I  ·  First 15 seconds",
                     is_afib=is_afib,
                 )
-                st.plotly_chart(fig_ecg, use_container_width=True)
+                # FIX 2: replaced use_container_width with width
+                st.plotly_chart(fig_ecg, width="stretch")
             with gauge_col:
                 st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-                st.plotly_chart(plot_gauge(prob), use_container_width=True)
+                st.plotly_chart(plot_gauge(prob), width="stretch")
                 lbl_c = COLORS["danger"] if is_afib else (COLORS["warn"] if cls == "Borderline" else COLORS["success"])
                 st.markdown(
                     f"<div style='text-align:center; font-family:Inter; font-size:0.72rem;"
@@ -592,10 +615,10 @@ def main():
                 cols = st.columns(2 if show_poincare else 1)
                 if show_rr:
                     with cols[0]:
-                        st.plotly_chart(plot_rr_series(rr), use_container_width=True)
+                        st.plotly_chart(plot_rr_series(rr), width="stretch")
                 if show_poincare and len(cols) > 1:
                     with cols[1]:
-                        st.plotly_chart(plot_poincare(rr, is_afib), use_container_width=True)
+                        st.plotly_chart(plot_poincare(rr, is_afib), width="stretch")
 
             # HRV table
             with st.expander("📋  Full HRV Feature Report", expanded=False):
@@ -656,7 +679,6 @@ def main():
 
     # ══ TAB LIVE — LIVE ECG DEMO ═══════════════════════════════════════════════
     with tab_live:
-        # ── Controls ──────────────────────────────────────────────────────────
         st.markdown("""
         <div style='margin-bottom:0.8rem;'>
           <span style='font-family:"Sora",sans-serif; font-size:1.1rem; color:white; font-weight:700;'>
@@ -672,7 +694,6 @@ def main():
         speed      = c2.selectbox("Speed",     ["0.5x", "1x", "2x"],        key="lspeed", index=1)
         window_sec = c3.selectbox("Window (s)",[5, 8, 10],                   key="lwin",   index=1)
 
-        # session state
         for _k, _v in [("lrun", False), ("loffset", 0), ("lresult", None), ("lctr", 0)]:
             if _k not in st.session_state:
                 st.session_state[_k] = _v
@@ -689,12 +710,11 @@ def main():
             st.session_state.lctr    = 0
             st.rerun()
 
-        # ── Signal generation ─────────────────────────────────────────────────
         FS       = SAMPLE_RATE
         spd_map  = {"0.5x": 0.5, "1x": 1.0, "2x": 2.0}
         spd      = spd_map[speed]
         win_n    = window_sec * FS
-        step_n   = max(1, int(FS * 0.033 * spd))   # advance ~33ms * speed per frame
+        step_n   = max(1, int(FS * 0.033 * spd))
 
         def _beat(t, rr):
             ph = (t % rr) / rr
@@ -718,21 +738,17 @@ def main():
             out += np.random.default_rng(int(offset) % 9999).normal(0, 0.018, n)
             return out.astype(np.float32)
 
-        # Always render the current window (even when paused)
         offset = st.session_state.loffset
         sig    = _gen_window(live_mode, offset, win_n)
 
-        # Normalise + polarity
         sig_n = (sig - np.mean(sig)) / (np.std(sig) + 1e-8)
         if np.abs(sig_n.min()) > np.abs(sig_n.max()):
             sig_n = -sig_n
 
-        # R-peak detection
         from scipy.signal import find_peaks as _fp
         thr_pk = max(0.3, np.mean(sig_n) + 0.5 * np.std(sig_n))
         live_peaks, _ = _fp(sig_n, height=thr_pk, distance=int(0.4 * FS), prominence=0.3)
 
-        # AI classification every 5 s of new data
         st.session_state.lctr += step_n
         if st.session_state.lctr >= FS * 5 or st.session_state.lresult is None:
             if len(sig_n) >= FS * 3:
@@ -744,31 +760,19 @@ def main():
         cls     = result["classification"]   if result else "Collecting…"
         is_afib = prob >= 0.65
 
-        # ── Status banner ─────────────────────────────────────────────────────
         if not result:
-            st.markdown("<div class=\'cs-alert\' style=\'background:rgba(42,181,181,0.07); border:1px solid rgba(42,181,181,0.3); border-left:4px solid #2ab5b5; margin-bottom:0.5rem;\'><span>⏳</span>&nbsp; Collecting data — AI will classify after 5 seconds…</div>", unsafe_allow_html=True)
+            st.markdown("<div class='cs-alert' style='background:rgba(42,181,181,0.07); border:1px solid rgba(42,181,181,0.3); border-left:4px solid #2ab5b5; margin-bottom:0.5rem;'><span>⏳</span>&nbsp; Collecting data — AI will classify after 5 seconds…</div>", unsafe_allow_html=True)
         elif is_afib:
-            st.markdown(f"<div class=\'cs-alert cs-alert-afib\' style=\'margin-bottom:0.5rem;\'><span style=\'font-size:1.3rem;\'>⚠️</span>&nbsp;<strong style=\'color:#f04060;\'>AFib Detected — {prob*100:.1f}%</strong>&nbsp; Irregular rhythm · re-classifies every 5s</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='cs-alert cs-alert-afib' style='margin-bottom:0.5rem;'><span style='font-size:1.3rem;'>⚠️</span>&nbsp;<strong style='color:#f04060;'>AFib Detected — {prob*100:.1f}%</strong>&nbsp; Irregular rhythm · re-classifies every 5s</div>", unsafe_allow_html=True)
         else:
-            st.markdown(f"<div class=\'cs-alert cs-alert-normal\' style=\'margin-bottom:0.5rem;\'><span style=\'font-size:1.3rem;\'>✅</span>&nbsp;<strong style=\'color:#1fcc7a;\'>Normal Sinus — {prob*100:.1f}% AFib probability</strong>&nbsp; Regular rhythm · re-classifies every 5s</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='cs-alert cs-alert-normal' style='margin-bottom:0.5rem;'><span style='font-size:1.3rem;'>✅</span>&nbsp;<strong style='color:#1fcc7a;'>Normal Sinus — {prob*100:.1f}% AFib probability</strong>&nbsp; Regular rhythm · re-classifies every 5s</div>", unsafe_allow_html=True)
 
-        # ── ECG plot — FIXED x-axis 0…window_sec, DATA slides left ───────────
-        t_disp    = np.arange(win_n) / FS          # always 0 → window_sec
+        t_disp    = np.arange(win_n) / FS
         tc        = "#d03030" if is_afib else "#1a5fa8"
         sig_lo    = float(sig_n.min()) - 0.35
         sig_hi    = float(sig_n.max()) + 0.35
 
         fig = go.Figure()
-        # Major grid (0.2s / 0.5mV)
-        for gx in np.arange(0, window_sec + 0.2, 0.2):
-            fig.add_vline(gx, line=dict(color="rgba(210,50,50,0.30)", width=1))
-        for gy in np.arange(sig_lo, sig_hi + 0.5, 0.5):
-            fig.add_hline(gy, line=dict(color="rgba(210,50,50,0.30)", width=1))
-        # Minor grid (0.04s / 0.1mV)
-        for gx in np.arange(0, window_sec + 0.04, 0.04):
-            fig.add_vline(gx, line=dict(color="rgba(210,50,50,0.10)", width=0.5))
-        for gy in np.arange(sig_lo, sig_hi + 0.1, 0.1):
-            fig.add_hline(gy, line=dict(color="rgba(210,50,50,0.10)", width=0.5))
 
         fig.add_trace(go.Scatter(
             x=t_disp, y=sig_n, mode="lines",
@@ -789,12 +793,16 @@ def main():
                 font=dict(family="Inter", size=12, color="#7a9bb8"), x=0.01,
             ),
             xaxis=dict(
-                title="Time (s)", color="#7a9bb8", showgrid=False,
+                title="Time (s)", color="#7a9bb8",
+                gridcolor="rgba(210,50,50,0.20)", gridwidth=1, dtick=0.2, showgrid=True,
+                minor=dict(dtick=0.04, gridcolor="rgba(210,50,50,0.08)", showgrid=True),
                 range=[0, window_sec], fixedrange=True,
                 tickfont=dict(family="JetBrains Mono", size=10, color="#7a9bb8"),
             ),
             yaxis=dict(
-                title="mV", color="#7a9bb8", showgrid=False,
+                title="mV", color="#7a9bb8",
+                gridcolor="rgba(210,50,50,0.20)", gridwidth=1, dtick=0.5, showgrid=True,
+                minor=dict(dtick=0.1, gridcolor="rgba(210,50,50,0.08)", showgrid=True),
                 range=[sig_lo, sig_hi], fixedrange=True,
                 tickfont=dict(family="JetBrains Mono", size=10, color="#7a9bb8"),
             ),
@@ -805,9 +813,9 @@ def main():
             height=320, margin=dict(l=55, r=15, t=40, b=45),
             uirevision="ecg-live",
         )
-        st.plotly_chart(fig, use_container_width=True)
+        # FIX 2 applied here too
+        st.plotly_chart(fig, width="stretch")
 
-        # ── Metrics ───────────────────────────────────────────────────────────
         hrv = result.get("hrv_features", {}) if result else {}
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("AFib Probability", f"{prob*100:.1f}%",
@@ -818,13 +826,12 @@ def main():
         m4.metric("Beats Detected", str(len(live_peaks)))
         m5.metric("Classification", cls)
 
-        # ── Advance stream ────────────────────────────────────────────────────
         if st.session_state.lrun:
             st.session_state.loffset += step_n
             time.sleep({"0.5x": 0.06, "1x": 0.033, "2x": 0.016}[speed])
             st.rerun()
         elif st.session_state.loffset == 0:
-            st.markdown("<div style=\'text-align:center; padding:10px 0 0; font-size:0.78rem; color:#3a5a78;\'>Press ▶ Start · switch Rhythm anytime while running</div>", unsafe_allow_html=True)
+            st.markdown("<div style='text-align:center; padding:10px 0 0; font-size:0.78rem; color:#3a5a78;'>Press ▶ Start · switch Rhythm anytime while running</div>", unsafe_allow_html=True)
 
 
     # ══ TAB 2 — MODEL METRICS ═════════════════════════════════════════════════
@@ -846,7 +853,7 @@ def main():
 
                 col_roc, col_cm = st.columns(2)
                 with col_roc:
-                    st.plotly_chart(plot_roc(r), use_container_width=True)
+                    st.plotly_chart(plot_roc(r), width="stretch")
                 with col_cm:
                     tp = r.get("tp", 0); fp = r.get("fp", 0)
                     fn = r.get("fn", 0); tn = r.get("tn", 0)
@@ -876,7 +883,7 @@ def main():
                         xaxis=dict(tickfont=dict(color=COLORS["text_mid"])),
                         yaxis=dict(tickfont=dict(color=COLORS["text_mid"])),
                     )
-                    st.plotly_chart(cmf, use_container_width=True)
+                    st.plotly_chart(cmf, width="stretch")
 
                 fi_path = Path("models/results/feature_importance.csv")
                 if tag == "rf" and fi_path.exists():
@@ -900,7 +907,7 @@ def main():
                         yaxis=dict(color=COLORS["text"], tickfont=dict(family="Inter", size=11)),
                         height=320, margin=dict(l=130, r=60, t=45, b=40),
                     )
-                    st.plotly_chart(fi_fig, use_container_width=True)
+                    st.plotly_chart(fi_fig, width="stretch")
 
                 st.divider()
 
@@ -944,7 +951,7 @@ def main():
                 xaxis=dict(color=COLORS["text_mid"], tickfont=dict(family="Inter", size=11)),
                 height=280, margin=dict(l=50, r=20, t=45, b=40), showlegend=False,
             )
-            st.plotly_chart(imb, use_container_width=True)
+            st.plotly_chart(imb, width="stretch")
 
         with col_strategy:
             st.markdown(f"""
