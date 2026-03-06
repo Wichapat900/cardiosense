@@ -381,8 +381,18 @@ def run_inference(signal, fs=SAMPLE_RATE):
         sig = (sig - np.mean(sig)) / (np.std(sig) + 1e-8)
         if np.abs(np.min(sig)) > np.abs(np.max(sig)):
             sig = -sig
-        thr = max(0.5, np.percentile(sig, 80))
-        peaks, _ = find_peaks(sig, height=thr, distance=int(0.5 * fs))
+        thr = max(0.6, np.percentile(sig, 88))
+        peaks, _ = find_peaks(
+            sig,
+            height=thr,
+            distance=int(0.45 * fs),   # min 450ms between peaks (~133 bpm max)
+            prominence=0.5,             # must stand out clearly from surroundings
+            wlen=int(0.6 * fs),         # prominence window 600ms
+        )
+        # If too few peaks found, relax threshold slightly
+        if len(peaks) < 3:
+            thr2 = max(0.4, np.percentile(sig, 75))
+            peaks, _ = find_peaks(sig, height=thr2, distance=int(0.45 * fs), prominence=0.3)
         rr = np.diff(peaks) / fs * 1000 if len(peaks) > 1 else np.array([])
         rr = rr[(rr > 300) & (rr < 2000)] if len(rr) > 0 else np.array([])
         mean_rr = float(np.mean(rr)) if len(rr) > 0 else 833.0
