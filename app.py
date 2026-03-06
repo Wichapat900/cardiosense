@@ -168,14 +168,14 @@ def generate_demo_signal(duration_sec=30, mode="normal"):
             signal[i] -= 0.25 * np.exp(-((phase - 0.52) * 50) ** 2)
             signal[i] += 0.30 * np.exp(-((phase - 0.72) *  7) ** 2)
     else:
-        # AFib: chaotic RR intervals + tachycardia tendency + f-wave baseline
-        rng2 = np.random.default_rng(7)
+        # AFib: irregular RR intervals — min 450ms (133bpm max) for clean display
+        # CV ~0.25, RMSSD ~130ms — clearly above AFib thresholds
+        rng2 = np.random.default_rng(3)
         pos  = 0.0
         beats = []
         while pos < duration_sec:
-            # Chaotic: mix of very short and long intervals (250–950ms)
-            # This gives CV ~0.28 and RMSSD ~160ms — well above AFib thresholds
-            rr = 0.25 + rng2.random() * 0.70
+            # Irregular but not too fast: 450ms–1050ms range
+            rr = 0.45 + rng2.random() * 0.60
             beats.append((pos, rr))
             pos += rr
         for beat_pos, rr in beats:
@@ -185,10 +185,9 @@ def generate_demo_signal(duration_sec=30, mode="normal"):
             signal[mask] += 1.00 * np.exp(-((ph - 0.50) * 65) ** 2)
             signal[mask] -= 0.22 * np.exp(-((ph - 0.52) * 55) ** 2)
             signal[mask] += 0.20 * np.exp(-((ph - 0.72) *  7) ** 2)
-            # Strong f-wave fibrillatory baseline
-            signal[mask] += 0.12 * np.sin(bt[mask] * 32) * np.sin(bt[mask] * 47)
-            signal[mask] += 0.06 * np.sin(bt[mask] * 19) * np.sin(bt[mask] * 61)
-    return (signal + np.random.normal(0, 0.035, len(t))).astype(np.float32)
+            # f-wave fibrillatory baseline
+            signal[mask] += 0.10 * np.sin(bt[mask] * 32) * np.sin(bt[mask] * 47)
+    return (signal + np.random.normal(0, 0.030, len(t))).astype(np.float32)
 
 
 # ─── Charts ───────────────────────────────────────────────────────────────────
@@ -736,16 +735,16 @@ def main():
             🔴 Live ECG Simulation
           </span>
           <span style='font-size:0.78rem; color:#7a9bb8; margin-left:12px;'>
-            Fixed-window scrolling — identical to a real hospital monitor
+            Smooth scrolling — hospital monitor style
           </span>
         </div>""", unsafe_allow_html=True)
 
         c1, c2, c3 = st.columns([1, 1, 1])
-        live_mode  = c1.selectbox("Rhythm",    ["Normal Sinus", "AFib"],    key="lmode")
-        speed      = c2.selectbox("Speed",     ["0.5x", "1x", "2x"],        key="lspeed", index=1)
-        window_sec = c3.selectbox("Window (s)",[5, 8, 10],                   key="lwin",   index=1)
+        live_mode  = c1.selectbox("Rhythm",     ["Normal Sinus", "AFib"], key="lmode")
+        speed      = c2.selectbox("Speed",      ["0.5x", "1x", "2x"],    key="lspeed", index=1)
+        window_sec = c3.selectbox("Window (s)", [5, 8, 10],               key="lwin",   index=1)
 
-        for _k, _v in [("lrun", False), ("loffset", 0), ("lresult", None), ("lctr", 0)]:
+        for _k, _v in [("lrun", False), ("lbuf", []), ("lresult", None), ("lctr", 0)]:
             if _k not in st.session_state:
                 st.session_state[_k] = _v
 
@@ -756,54 +755,74 @@ def main():
             st.session_state.lrun = False
         if bc3.button("↺  Reset", key="lreset", use_container_width=True):
             st.session_state.lrun    = False
-            st.session_state.loffset = 0
+            st.session_state.lbuf   = []
             st.session_state.lresult = None
             st.session_state.lctr    = 0
             st.rerun()
 
-        FS       = SAMPLE_RATE
-        spd_map  = {"0.5x": 0.5, "1x": 1.0, "2x": 2.0}
-        spd      = spd_map[speed]
-        win_n    = window_sec * FS
-        step_n   = max(1, int(FS * 0.033 * spd))
+        FS      = SAMPLE_RATE
+        WIN_N   = window_sec * FS           # samples in display window
+        spd_map = {"0.5x": 0.5, "1x": 1.0, "2x": 2.0}
+        spd     = spd_map[speed]
+        # Chunk = samples added per frame (~30ms real time at 1x)
+        CHUNK   = max(4, int(FS * 0.030 * spd))
 
-        def _beat(t, rr):
-            ph = (t % rr) / rr
-            v  =  1.20 * np.exp(-((ph - 0.50) * 55) ** 2)
-            v += -0.25 * np.exp(-((ph - 0.52) * 50) ** 2)
-            v +=  0.15 * np.exp(-((ph - 0.20) * 12) ** 2)
-            v += -0.10 * np.exp(-((ph - 0.48) * 40) ** 2)
-            v +=  0.30 * np.exp(-((ph - 0.72) *  7) ** 2)
-            return v
+        # ── Continuous signal generator (sample-accurate) ─────────────────────
+        def _sample(idx, mode):
+            t = idx / FS
+            if mode == "Normal Sinus":
+                rr  = 0.833
+                ph  = (t % rr) / rr
+                v   =  1.20 * np.exp(-((ph - 0.50) * 55) ** 2)
+                v  += -0.25 * np.exp(-((ph - 0.52) * 50) ** 2)
+                v  +=  0.15 * np.exp(-((ph - 0.20) * 12) ** 2)
+                v  += -0.10 * np.exp(-((ph - 0.48) * 40) ** 2)
+                v  +=  0.30 * np.exp(-((ph - 0.72) *  7) ** 2)
+            else:
+                rr  = max(0.45, 0.67 + 0.22 * np.sin(t * 1.3) + 0.18 * np.sin(t * 2.9))
+                ph  = (t % rr) / rr
+                v   =  1.20 * np.exp(-((ph - 0.50) * 55) ** 2)
+                v  += -0.25 * np.exp(-((ph - 0.52) * 50) ** 2)
+                v  +=  0.30 * np.exp(-((ph - 0.72) *  7) ** 2)
+                v  +=  0.09 * np.sin(t * 37) * np.sin(t * 53)
+            return float(v)
 
-        def _gen_window(mode, offset, n):
-            t_arr = np.arange(offset, offset + n) / FS
-            out   = np.zeros(n)
-            for i, t in enumerate(t_arr):
-                if mode == "Normal Sinus":
-                    out[i] = _beat(t, 0.833)
-                else:
-                    rr = max(0.32, 0.58 + 0.28 * np.sin(t * 1.7) + 0.14 * np.sin(t * 3.3))
-                    out[i] = _beat(t, rr)
-                    out[i] += 0.07 * np.sin(t * 43) * np.sin(t * 71)
-            out += np.random.default_rng(int(offset) % 9999).normal(0, 0.018, n)
-            return out.astype(np.float32)
+        # Extend buffer with new chunk
+        buf = st.session_state.lbuf
+        if st.session_state.lrun or len(buf) == 0:
+            start_idx = len(buf)
+            new_samples = [_sample(start_idx + i, live_mode) for i in range(CHUNK)]
+            buf.extend(new_samples)
+            # Keep buffer to 3× window max — discard oldest
+            if len(buf) > WIN_N * 3:
+                buf = buf[-WIN_N * 3:]
+            st.session_state.lbuf = buf
 
-        offset = st.session_state.loffset
-        sig    = _gen_window(live_mode, offset, win_n)
+        # Sliding window — always show last WIN_N samples
+        win = np.array(buf[-WIN_N:] if len(buf) >= WIN_N else buf, dtype=np.float32)
+        win_norm = (win - np.mean(win)) / (np.std(win) + 1e-8)
+        if len(win_norm) > 0 and np.abs(win_norm.min()) > np.abs(win_norm.max()):
+            win_norm = -win_norm
 
-        sig_n = (sig - np.mean(sig)) / (np.std(sig) + 1e-8)
-        if np.abs(sig_n.min()) > np.abs(sig_n.max()):
-            sig_n = -sig_n
+        # Time axis always 0 → window_sec (fixed window, signal slides left)
+        t_disp = np.linspace(0, window_sec, len(win_norm))
 
+        # R-peak detection on current window
         from scipy.signal import find_peaks as _fp
-        thr_pk = max(0.3, np.mean(sig_n) + 0.5 * np.std(sig_n))
-        live_peaks, _ = _fp(sig_n, height=thr_pk, distance=int(0.4 * FS), prominence=0.3)
+        live_peaks = np.array([], dtype=int)
+        if len(win_norm) > FS:
+            sig_max = float(np.max(win_norm))
+            thr_pk  = max(0.35, sig_max * 0.35)
+            live_peaks, _ = _fp(win_norm, height=thr_pk,
+                                distance=int(0.32 * FS),
+                                prominence=sig_max * 0.28,
+                                wlen=int(0.6 * FS))
 
-        st.session_state.lctr += step_n
+        # Re-classify every 5s worth of new samples
+        st.session_state.lctr += CHUNK
         if st.session_state.lctr >= FS * 5 or st.session_state.lresult is None:
-            if len(sig_n) >= FS * 3:
-                st.session_state.lresult = run_inference(sig_n, FS)
+            if len(win_norm) >= FS * 3:
+                st.session_state.lresult = run_inference(win_norm, FS)
                 st.session_state.lctr    = 0
 
         result  = st.session_state.lresult
@@ -811,49 +830,52 @@ def main():
         cls     = result["classification"]   if result else "Collecting…"
         is_afib = prob >= 0.65
 
+        # Status banner
         if not result:
-            st.markdown("<div class='cs-alert' style='background:rgba(42,181,181,0.07); border:1px solid rgba(42,181,181,0.3); border-left:4px solid #2ab5b5; margin-bottom:0.5rem;'><span>⏳</span>&nbsp; Collecting data — AI will classify after 5 seconds…</div>", unsafe_allow_html=True)
+            st.markdown("<div class='cs-alert' style='background:rgba(42,181,181,0.07);border:1px solid rgba(42,181,181,0.3);border-left:4px solid #2ab5b5;margin-bottom:0.5rem;'><span>⏳</span>&nbsp; Collecting data…</div>", unsafe_allow_html=True)
         elif is_afib:
-            st.markdown(f"<div class='cs-alert cs-alert-afib' style='margin-bottom:0.5rem;'><span style='font-size:1.3rem;'>⚠️</span>&nbsp;<strong style='color:#f04060;'>AFib Detected — {prob*100:.1f}%</strong>&nbsp; Irregular rhythm · re-classifies every 5s</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='cs-alert cs-alert-afib' style='margin-bottom:0.5rem;'><span style='font-size:1.3rem;'>⚠️</span>&nbsp;<strong style='color:#f04060;'>AFib Detected — {prob*100:.1f}%</strong>&nbsp; re-classifies every 5s</div>", unsafe_allow_html=True)
         else:
-            st.markdown(f"<div class='cs-alert cs-alert-normal' style='margin-bottom:0.5rem;'><span style='font-size:1.3rem;'>✅</span>&nbsp;<strong style='color:#1fcc7a;'>Normal Sinus — {prob*100:.1f}% AFib probability</strong>&nbsp; Regular rhythm · re-classifies every 5s</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='cs-alert cs-alert-normal' style='margin-bottom:0.5rem;'><span style='font-size:1.3rem;'>✅</span>&nbsp;<strong style='color:#1fcc7a;'>Normal Sinus — {prob*100:.1f}%</strong>&nbsp; re-classifies every 5s</div>", unsafe_allow_html=True)
 
-        t_disp    = np.arange(win_n) / FS
-        tc        = "#d03030" if is_afib else "#1a5fa8"
-        sig_lo    = float(sig_n.min()) - 0.35
-        sig_hi    = float(sig_n.max()) + 0.35
+        # Build chart — use st.empty() placeholder so it updates in-place
+        if "lecg_placeholder" not in st.session_state:
+            st.session_state.lecg_placeholder = None
+
+        tc     = "#d03030" if is_afib else "#1a5fa8"
+        sig_lo = -2.8
+        sig_hi =  2.8
 
         fig = go.Figure()
-
         fig.add_trace(go.Scatter(
-            x=t_disp, y=sig_n, mode="lines",
+            x=t_disp, y=win_norm, mode="lines",
             line=dict(color=tc, width=1.5),
             name="ECG", hoverinfo="skip",
         ))
         if len(live_peaks) > 0:
             fig.add_trace(go.Scatter(
-                x=t_disp[live_peaks], y=sig_n[live_peaks], mode="markers",
+                x=t_disp[live_peaks], y=win_norm[live_peaks], mode="markers",
                 marker=dict(color="#f04060", size=7, symbol="circle",
                             line=dict(color="white", width=1.5)),
                 name="R peaks", hoverinfo="skip",
             ))
-
         fig.update_layout(
             title=dict(
-                text=f"ECG Monitor  ·  {live_mode}  ·  {len(live_peaks)} beats  ·  {cls}",
+                text=f"ECG Monitor  ·  {live_mode}  ·  HR≈{result['heart_rate']:.0f}bpm  ·  {cls}" if result else f"ECG Monitor  ·  {live_mode}",
                 font=dict(family="Inter", size=12, color="#7a9bb8"), x=0.01,
             ),
             xaxis=dict(
                 title="Time (s)", color="#7a9bb8",
-                gridcolor="rgba(210,50,50,0.20)", gridwidth=1, dtick=0.2, showgrid=True,
-                minor=dict(dtick=0.04, gridcolor="rgba(210,50,50,0.08)", showgrid=True),
+                gridcolor="rgba(210,50,50,0.20)", gridwidth=1,
+                dtick=1.0, showgrid=True,
+                minor=dict(dtick=0.2, gridcolor="rgba(210,50,50,0.08)", showgrid=True),
                 range=[0, window_sec], fixedrange=True,
                 tickfont=dict(family="JetBrains Mono", size=10, color="#7a9bb8"),
             ),
             yaxis=dict(
                 title="mV", color="#7a9bb8",
-                gridcolor="rgba(210,50,50,0.20)", gridwidth=1, dtick=0.5, showgrid=True,
-                minor=dict(dtick=0.1, gridcolor="rgba(210,50,50,0.08)", showgrid=True),
+                gridcolor="rgba(210,50,50,0.20)", gridwidth=1,
+                dtick=1.0, showgrid=True,
                 range=[sig_lo, sig_hi], fixedrange=True,
                 tickfont=dict(family="JetBrains Mono", size=10, color="#7a9bb8"),
             ),
@@ -862,10 +884,11 @@ def main():
             legend=dict(bgcolor="rgba(15,31,53,0.85)", bordercolor="#1a2d3d",
                         borderwidth=1, font=dict(family="Inter", size=11, color="#c8dde8")),
             height=320, margin=dict(l=55, r=15, t=40, b=45),
-            uirevision="ecg-live",
+            uirevision="ecg-live",   # keeps zoom/pan state between reruns
         )
-        # FIX 2 applied here too
-        st.plotly_chart(fig, width="stretch")
+
+        ecg_slot = st.empty()
+        ecg_slot.plotly_chart(fig, width="stretch")
 
         hrv = result.get("hrv_features", {}) if result else {}
         m1, m2, m3, m4, m5 = st.columns(5)
@@ -878,11 +901,10 @@ def main():
         m5.metric("Classification", cls)
 
         if st.session_state.lrun:
-            st.session_state.loffset += step_n
-            time.sleep({"0.5x": 0.06, "1x": 0.033, "2x": 0.016}[speed])
+            time.sleep(max(0.04, 0.08 / spd))   # ~12-25fps target
             st.rerun()
-        elif st.session_state.loffset == 0:
-            st.markdown("<div style='text-align:center; padding:10px 0 0; font-size:0.78rem; color:#3a5a78;'>Press ▶ Start · switch Rhythm anytime while running</div>", unsafe_allow_html=True)
+        elif len(buf) == 0:
+            st.markdown("<div style='text-align:center;padding:10px 0 0;font-size:0.78rem;color:#3a5a78;'>Press ▶ Start · switch Rhythm anytime while running</div>", unsafe_allow_html=True)
 
 
     # ══ TAB 2 — MODEL METRICS ═════════════════════════════════════════════════
