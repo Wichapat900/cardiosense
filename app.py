@@ -168,50 +168,58 @@ def generate_demo_signal(duration_sec=30, mode="normal"):
             signal[i] -= 0.25 * np.exp(-((phase - 0.52) * 50) ** 2)
             signal[i] += 0.30 * np.exp(-((phase - 0.72) *  7) ** 2)
     else:
-        pos = 0.0
+        # AFib: highly irregular RR intervals (300–1100ms range), no P waves, fibrillatory baseline
+        rng2 = np.random.default_rng(42)
+        pos  = 0.0
         beats = []
         while pos < duration_sec:
-            rr = 0.55 + np.random.random() * 0.65
+            # Very irregular: uniform random between 300ms and 1100ms
+            rr = 0.30 + rng2.random() * 0.80
             beats.append((pos, rr))
             pos += rr
         for beat_pos, rr in beats:
-            bt = t - beat_pos
+            bt   = t - beat_pos
             mask = (bt >= 0) & (bt < rr)
-            ph = bt[mask] / rr
-            signal[mask] += 1.00 * np.exp(-((ph - 0.50) * 55) ** 2)
-            signal[mask] -= 0.22 * np.exp(-((ph - 0.52) * 48) ** 2)
-            signal[mask] += 0.25 * np.exp(-((ph - 0.72) *  7) ** 2)
-            signal[mask] += 0.04 * np.sin(bt[mask] * 37) * np.sin(bt[mask] * 53)
-    return (signal + np.random.normal(0, 0.025, len(t))).astype(np.float32)
+            ph   = bt[mask] / rr
+            # Narrower, taller QRS (no P wave)
+            signal[mask] += 1.00 * np.exp(-((ph - 0.50) * 65) ** 2)
+            signal[mask] -= 0.22 * np.exp(-((ph - 0.52) * 55) ** 2)
+            signal[mask] += 0.20 * np.exp(-((ph - 0.72) *  7) ** 2)
+            # Fibrillatory baseline (f-waves ~350–600 Hz equivalent)
+            signal[mask] += 0.08 * np.sin(bt[mask] * 28) * np.sin(bt[mask] * 41)
+    return (signal + np.random.normal(0, 0.030, len(t))).astype(np.float32)
 
 
 # ─── Charts ───────────────────────────────────────────────────────────────────
 
 def plot_ecg_clinical(signal, fs=SAMPLE_RATE, r_peaks=None, title="ECG Lead I", is_afib=False):
-    # Downsample for speed — 1250 points is plenty for display
-    max_pts = 1250
-    if len(signal) > max_pts:
-        step = len(signal) // max_pts
-        signal = signal[::step]
-        if r_peaks:
-            r_peaks = [p // step for p in r_peaks if p // step < len(signal)]
+    orig_signal = np.array(signal)
+    orig_fs     = fs
 
-    t = np.arange(len(signal)) / fs
+    # Downsample DISPLAY signal only — keep original for R-peak amplitude lookup
+    max_pts = 1500
+    step = max(1, len(orig_signal) // max_pts)
+    disp_signal = orig_signal[::step]
+    disp_t      = np.arange(len(disp_signal)) * step / orig_fs  # real time axis
+
     trace_color = COLORS["ecg_afib"] if is_afib else COLORS["ecg_normal"]
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=t, y=signal, mode="lines",
+        x=disp_t, y=disp_signal, mode="lines",
         line=dict(color=trace_color, width=1.4),
         name="ECG",
         hovertemplate="%{x:.3f}s  %{y:.3f}mV<extra></extra>",
     ))
+    # R-peaks: convert original sample indices to time, use original amplitude
     if r_peaks and len(r_peaks) > 0:
-        arr = np.array(r_peaks)
-        valid = arr[arr < len(signal)]
+        arr   = np.array(r_peaks, dtype=int)
+        valid = arr[(arr >= 0) & (arr < len(orig_signal))]
         fig.add_trace(go.Scatter(
-            x=valid / fs, y=signal[valid], mode="markers",
-            marker=dict(color=COLORS["danger"], size=7, symbol="circle",
+            x=valid / orig_fs,
+            y=orig_signal[valid],
+            mode="markers",
+            marker=dict(color=COLORS["danger"], size=8, symbol="circle",
                         line=dict(color="white", width=1.5)),
             name="R peaks",
             hovertemplate="R peak @ %{x:.3f}s<extra></extra>",
