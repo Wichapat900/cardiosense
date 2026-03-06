@@ -617,10 +617,22 @@ def main():
             m1.metric("AFib Probability", f"{prob*100:.1f}%",
                       delta="HIGH ⚠" if is_afib else "Normal",
                       delta_color="inverse" if is_afib else "normal")
-            m2.metric("Heart Rate", f"{result['heart_rate']:.0f} bpm",
-                      delta="⚠ Tachycardia" if result["heart_rate"] > 100
-                            else ("⚠ Bradycardia" if result["heart_rate"] < 60 else "Normal"),
-                      delta_color="inverse" if result["heart_rate"] > 100 or result["heart_rate"] < 60 else "normal")
+            _hr = result["heart_rate"]
+            _is_afib_result = cls in ("AFib", "Borderline")
+            if _hr > 100:
+                _hr_label = "⚠ Tachycardia"
+                _hr_color = "inverse"
+            elif _hr < 60:
+                _hr_label = "⚠ Bradycardia"
+                _hr_color = "inverse"
+            elif _is_afib_result:
+                _hr_label = "Controlled"   # AFib but rate is normal
+                _hr_color = "normal"
+            else:
+                _hr_label = "Normal"
+                _hr_color = "normal"
+            m2.metric("Heart Rate", f"{_hr:.0f} bpm",
+                      delta=_hr_label, delta_color=_hr_color)
             m3.metric("RMSSD", f"{hrv.get('rmssd', 0):.1f} ms",
                       help="Root Mean Square Successive Differences — elevated in AFib")
             m4.metric("SDNN",  f"{hrv.get('sdnn', 0):.1f} ms")
