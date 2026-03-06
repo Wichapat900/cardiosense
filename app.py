@@ -626,8 +626,8 @@ def main():
                 _hr_label = "⚠ Bradycardia"
                 _hr_color = "inverse"
             elif _is_afib_result:
-                _hr_label = "Controlled"   # AFib but rate is normal
-                _hr_color = "normal"
+                _hr_label = "⚠ Controlled"  # AFib but rate is normal — still warrants attention
+                _hr_color = "inverse"
             else:
                 _hr_label = "Normal"
                 _hr_color = "normal"
