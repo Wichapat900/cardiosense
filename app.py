@@ -168,26 +168,27 @@ def generate_demo_signal(duration_sec=30, mode="normal"):
             signal[i] -= 0.25 * np.exp(-((phase - 0.52) * 50) ** 2)
             signal[i] += 0.30 * np.exp(-((phase - 0.72) *  7) ** 2)
     else:
-        # AFib: highly irregular RR intervals (300–1100ms range), no P waves, fibrillatory baseline
-        rng2 = np.random.default_rng(42)
+        # AFib: chaotic RR intervals + tachycardia tendency + f-wave baseline
+        rng2 = np.random.default_rng(7)
         pos  = 0.0
         beats = []
         while pos < duration_sec:
-            # Very irregular: uniform random between 300ms and 1100ms
-            rr = 0.30 + rng2.random() * 0.80
+            # Chaotic: mix of very short and long intervals (250–950ms)
+            # This gives CV ~0.28 and RMSSD ~160ms — well above AFib thresholds
+            rr = 0.25 + rng2.random() * 0.70
             beats.append((pos, rr))
             pos += rr
         for beat_pos, rr in beats:
             bt   = t - beat_pos
             mask = (bt >= 0) & (bt < rr)
             ph   = bt[mask] / rr
-            # Narrower, taller QRS (no P wave)
             signal[mask] += 1.00 * np.exp(-((ph - 0.50) * 65) ** 2)
             signal[mask] -= 0.22 * np.exp(-((ph - 0.52) * 55) ** 2)
             signal[mask] += 0.20 * np.exp(-((ph - 0.72) *  7) ** 2)
-            # Fibrillatory baseline (f-waves ~350–600 Hz equivalent)
-            signal[mask] += 0.08 * np.sin(bt[mask] * 28) * np.sin(bt[mask] * 41)
-    return (signal + np.random.normal(0, 0.030, len(t))).astype(np.float32)
+            # Strong f-wave fibrillatory baseline
+            signal[mask] += 0.12 * np.sin(bt[mask] * 32) * np.sin(bt[mask] * 47)
+            signal[mask] += 0.06 * np.sin(bt[mask] * 19) * np.sin(bt[mask] * 61)
+    return (signal + np.random.normal(0, 0.035, len(t))).astype(np.float32)
 
 
 # ─── Charts ───────────────────────────────────────────────────────────────────
@@ -231,8 +232,8 @@ def plot_ecg_clinical(signal, fs=SAMPLE_RATE, r_peaks=None, title="ECG Lead I", 
         xaxis=dict(
             title="Time (s)", color=COLORS["text_mid"],
             gridcolor="rgba(210,50,50,0.20)", gridwidth=1,
-            dtick=0.2, showgrid=True,
-            minor=dict(dtick=0.04, gridcolor="rgba(210,50,50,0.08)", showgrid=True),
+            dtick=1.0, showgrid=True,
+            minor=dict(dtick=0.2, gridcolor="rgba(210,50,50,0.08)", showgrid=True),
             tickfont=dict(family="JetBrains Mono", size=10, color=COLORS["text_mid"]),
         ),
         yaxis=dict(
@@ -390,12 +391,14 @@ def run_inference(signal, fs=SAMPLE_RATE):
         cv      = sdnn / mean_rr if mean_rr > 0 else 0.0
         hr      = 60000 / mean_rr if mean_rr > 0 else 0.0
 
-        # Improved heuristic: AFib has high CV (>0.10) AND high RMSSD (>50ms)
-        # Normal sinus: CV ~0.02-0.05, RMSSD ~20-40ms
-        # AFib:         CV ~0.15-0.35, RMSSD ~80-200ms
-        cv_score    = min(1.0, cv / 0.20)          # 0→1 as CV goes 0→0.20
-        rmssd_score = min(1.0, rmssd / 100.0)      # 0→1 as RMSSD goes 0→100ms
-        prob = min(0.97, max(0.03, (cv_score * 0.6 + rmssd_score * 0.4)))
+        # Heuristic thresholds (from literature):
+        # Normal sinus: CV ~0.02-0.05, RMSSD ~15-40ms
+        # AFib:         CV ~0.18-0.40, RMSSD ~100-250ms
+        cv_score    = min(1.0, cv / 0.18)          # saturates at CV=0.18 (clear AFib)
+        rmssd_score = min(1.0, rmssd / 80.0)       # saturates at RMSSD=80ms (clear AFib)
+        # Tachycardia boost — AFib often presents with fast rate (HR>100)
+        tachy_boost = 0.15 if hr > 100 else 0.0
+        prob = min(0.97, max(0.03, cv_score * 0.55 + rmssd_score * 0.35 + tachy_boost))
 
         cls = "Normal" if prob < 0.35 else ("Borderline" if prob < 0.65 else "AFib")
         return {
@@ -541,8 +544,9 @@ def main():
             peaks    = result["r_peaks"]
             disp_sig = np.array(result.get("signal", signal))
 
-            # Alert banner
-            if is_afib or cls == "AFib":
+            # Alert banner — also flag tachycardia (HR>100) as a warning
+            is_tachy = result["heart_rate"] > 100
+            if is_afib or cls == "AFib" or (is_tachy and cls in ("AFib", "Borderline")):
                 st.markdown(f"""
                 <div class='cs-alert cs-alert-afib'>
                   <span style='font-size:1.5rem; flex-shrink:0;'>⚠️</span>
@@ -588,8 +592,9 @@ def main():
                       delta="HIGH ⚠" if is_afib else "Normal",
                       delta_color="inverse" if is_afib else "normal")
             m2.metric("Heart Rate", f"{result['heart_rate']:.0f} bpm",
-                      delta="Tachycardia" if result["heart_rate"] > 100
-                            else ("Bradycardia" if result["heart_rate"] < 60 else "Normal"))
+                      delta="⚠ Tachycardia" if result["heart_rate"] > 100
+                            else ("⚠ Bradycardia" if result["heart_rate"] < 60 else "Normal"),
+                      delta_color="inverse" if result["heart_rate"] > 100 or result["heart_rate"] < 60 else "normal")
             m3.metric("RMSSD", f"{hrv.get('rmssd', 0):.1f} ms",
                       help="Root Mean Square Successive Differences — elevated in AFib")
             m4.metric("SDNN",  f"{hrv.get('sdnn', 0):.1f} ms")
