@@ -1,346 +1,315 @@
 """
-evaluate.py — CardioSense AFib Detection
-=========================================
-Generates full evaluation report:
-  - ROC curve + AUC
-  - Confusion matrix
-  - Precision-Recall curve
-  - Threshold sweep analysis
-  - Per-record performance breakdown
+evaluate.py — CardioSense Model Evaluation
+===========================================
+Generates full visual evaluation report matching the dashboard style.
+
+Outputs:
+  - models/results/report_rf.json
+  - models/results/feature_importance.csv
+  - models/results/evaluation_rf.png   ← full visual report
 
 Usage:
-    python src/evaluate.py
-    python src/evaluate.py --model rf
-    python src/evaluate.py --model cnn
+  python src/evaluate.py
 """
 
 import numpy as np
 import pandas as pd
-import joblib
 import json
-import argparse
+import joblib
 from pathlib import Path
+from sklearn.metrics import (
+    roc_auc_score, average_precision_score,
+    confusion_matrix, f1_score,
+    roc_curve, precision_recall_curve,
+)
+from sklearn.model_selection import GroupShuffleSplit
+from sklearn.impute import SimpleImputer
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import (
-    roc_curve, auc, precision_recall_curve,
-    confusion_matrix, classification_report,
-    average_precision_score, f1_score
-)
+from matplotlib.colors import LinearSegmentedColormap
 import warnings
-warnings.filterwarnings('ignore')
+warnings.filterwarnings("ignore")
 
-PROCESSED_DIR = Path("data/processed")
-MODELS_DIR    = Path("models/saved")
-RESULTS_DIR   = Path("models/results")
+import sys
+sys.path.insert(0, str(Path(__file__).parent))
+from train import extract_features, FEATURE_NAMES
 
-COLORS = {
-    "bg":      "#050b12",
-    "panel":   "#0c1620",
-    "border":  "#1a2d3d",
-    "text":    "#c8dde8",
-    "accent":  "#00e5ff",
-    "danger":  "#ff3b6b",
-    "success": "#39ff6e",
-    "warn":    "#ffb300",
-}
+SAMPLE_RATE = 250
+DATA_DIR    = Path("data/processed")
+RESULTS_DIR = Path("models/results")
+SAVED_DIR   = Path("models/saved")
+RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-RANDOM_STATE = 42
-TEST_SIZE    = 0.2
-
-
-def styled_fig(nrows=1, ncols=1, figsize=(12, 5)):
-    fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
-    fig.patch.set_facecolor(COLORS["bg"])
-    axes_flat = [axes] if (nrows == 1 and ncols == 1) else np.array(axes).flatten()
-    for ax in axes_flat:
-        ax.set_facecolor(COLORS["panel"])
-        ax.tick_params(colors=COLORS["text"], labelsize=9)
-        ax.xaxis.label.set_color(COLORS["text"])
-        ax.yaxis.label.set_color(COLORS["text"])
-        ax.title.set_color(COLORS["text"])
-        for spine in ax.spines.values():
-            spine.set_edgecolor(COLORS["border"])
-    return fig, axes
+BG       = "#050b12"
+PANEL    = "#080f18"
+PANEL2   = "#0c1620"
+BORDER   = "#1a2d3d"
+TEXT     = "#c8dde8"
+TEXT_MID = "#7a9bb8"
+ACCENT   = "#2ab5b5"
+SUCCESS  = "#1fcc7a"
+DANGER   = "#f04060"
+WARN     = "#f4a124"
 
 
-# ─── RF Evaluation ────────────────────────────────────────────────────────────
+def set_dark_style():
+    plt.rcParams.update({
+        "figure.facecolor":  BG,
+        "axes.facecolor":    PANEL,
+        "axes.edgecolor":    BORDER,
+        "axes.labelcolor":   TEXT_MID,
+        "axes.titlecolor":   TEXT,
+        "xtick.color":       TEXT_MID,
+        "ytick.color":       TEXT_MID,
+        "grid.color":        BORDER,
+        "grid.linewidth":    0.6,
+        "text.color":        TEXT,
+        "font.family":       "DejaVu Sans",
+        "font.size":         9,
+        "axes.titlesize":    10,
+        "axes.labelsize":    9,
+    })
 
-def evaluate_rf():
-    pipeline_path = MODELS_DIR / "rf_pipeline.pkl"
-    if not pipeline_path.exists():
-        print("✗ RF model not found. Run: python src/train.py --model rf")
-        return
 
-    print("\n🌲 Evaluating Random Forest...")
-    meta = joblib.load(PROCESSED_DIR / "meta.pkl")
-    features_df = pd.read_csv(PROCESSED_DIR / "hrv_features.csv")
+def load_test_data(bundle):
+    signals     = np.load(DATA_DIR / "signals.npy")
+    labels      = np.load(DATA_DIR / "labels.npy")
+    patient_ids = np.load(DATA_DIR / "patient_ids.npy") \
+                  if (DATA_DIR / "patient_ids.npy").exists() \
+                  else np.arange(len(signals))
 
-    X = features_df[meta["feature_cols"]].values.astype(np.float32)
-    y = features_df["label"].values
+    gss  = GroupShuffleSplit(n_splits=1, test_size=0.20, random_state=42)
+    _, temp_idx = next(gss.split(signals, labels, patient_ids))
+    gss2 = GroupShuffleSplit(n_splits=1, test_size=0.50, random_state=42)
+    _, test_rel = next(gss2.split(
+        signals[temp_idx], labels[temp_idx], patient_ids[temp_idx]))
+    test_idx = temp_idx[test_rel]
 
-    # Load the EXACT test patients train.py held out — no re-splitting
-    split_path = RESULTS_DIR / "patient_split_rf.json"
-    if not split_path.exists():
-        print("✗ patient_split_rf.json not found.")
-        print("  Re-run training first: python src/train.py --model rf")
-        return
+    print(f"Evaluating on {len(test_idx)} test segments...")
+    X_test, y_test = [], []
+    for i, idx in enumerate(test_idx):
+        if i % 1000 == 0:
+            print(f"  {i}/{len(test_idx)}")
+        feats = extract_features(signals[idx], SAMPLE_RATE)
+        if feats is None:
+            continue
+        X_test.append([feats[f] for f in FEATURE_NAMES])
+        y_test.append(int(labels[idx]))
 
-    with open(split_path) as f:
-        split_info = json.load(f)
+    X_test = np.array(X_test, dtype=np.float32)
+    y_test = np.array(y_test)
 
-    test_patients = split_info["test_patients"]
-    test_idx = features_df[features_df["record_id"].isin(test_patients)].index.to_numpy()
-    X_test = X[test_idx]
-    y_test = y[test_idx]
-
-    # Fix any NaN/Inf values from HRV feature computation
+    imp    = SimpleImputer(strategy="median")
+    X_test = imp.fit_transform(X_test).astype(np.float32)
     X_test = np.nan_to_num(X_test, nan=0.0, posinf=0.0, neginf=0.0)
-
-    print(f"   Test patients ({len(test_patients)}): {test_patients}")
-    print(f"   Test segments: {len(y_test)}  ({int(y_test.sum())} AFib)")
-
-    pipeline = joblib.load(pipeline_path)
-    y_prob = pipeline.predict_proba(X_test)[:, 1]
-    y_pred = (y_prob > 0.5).astype(int)
-
-    generate_report(y_test, y_pred, y_prob, "Random Forest", "rf")
+    X_test = bundle["scaler"].transform(X_test)
+    return X_test, y_test
 
 
-# ─── CNN Evaluation ────────────────────────────────────────────────────────────
-
-def evaluate_cnn():
-    try:
-        import torch
-    except ImportError:
-        print("✗ PyTorch not installed — skip CNN evaluation")
-        return
-
-    checkpoint_path = MODELS_DIR / "cnn_best.pt"
-    if not checkpoint_path.exists():
-        print("✗ CNN model not found. Run: python src/train.py --model cnn")
-        return
-
-    print("\n🧠 Evaluating CNN+BiLSTM...")
-    from train import AFibCNNBiLSTM
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    signals = np.load(PROCESSED_DIR / "signals.npy")
-    labels  = np.load(PROCESSED_DIR / "labels.npy")
-
-    # Load the EXACT test patients train.py held out — no re-splitting
-    split_path = RESULTS_DIR / "patient_split_cnn.json"
-    if not split_path.exists():
-        print("✗ patient_split_cnn.json not found.")
-        print("  Re-run training first: python src/train.py --model cnn")
-        return
-
-    with open(split_path) as f:
-        split_info = json.load(f)
-
-    # Reconstruct test indices from saved patient IDs
-    features_df = pd.read_csv(PROCESSED_DIR / "hrv_features.csv")
-    test_patients = split_info["test_patients"]
-    test_idx = features_df[features_df["record_id"].isin(test_patients)].index.to_numpy()
-
-    X_test = signals[test_idx]
-    y_test = labels[test_idx]
-
-    # Fix any NaN/Inf values
-    X_test = np.nan_to_num(X_test, nan=0.0, posinf=0.0, neginf=0.0)
-
-    print(f"   Test patients ({len(test_patients)}): {test_patients}")
-    print(f"   Test segments: {len(y_test)}  ({int(y_test.sum())} AFib)")
-
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    model = AFibCNNBiLSTM(input_len=signals.shape[1]).to(device)
-    model.load_state_dict(checkpoint["model_state"])
-    model.eval()
-
-    from torch.utils.data import DataLoader, TensorDataset
-    loader = DataLoader(
-        TensorDataset(torch.FloatTensor(X_test[:, None, :])),
-        batch_size=128, shuffle=False
-    )
-
-    all_probs = []
-    with torch.no_grad():
-        for (xb,) in loader:
-            logits = model(xb.to(device))
-            all_probs.extend(torch.sigmoid(logits).cpu().numpy())
-
-    y_prob = np.array(all_probs)
-    y_pred = (y_prob > 0.5).astype(int)
-    generate_report(y_test, y_pred, y_prob, "CNN+BiLSTM", "cnn")
+def plot_roc(ax, y_test, probs, auc):
+    fpr, tpr, _ = roc_curve(y_test, probs)
+    ax.plot(fpr, tpr, color=ACCENT, lw=2, label=f"AUC = {auc:.3f}")
+    ax.plot([0, 1], [0, 1], color=BORDER, lw=1, linestyle="--")
+    ax.fill_between(fpr, tpr, alpha=0.08, color=ACCENT)
+    ax.set_xlim([0, 1]); ax.set_ylim([0, 1.02])
+    ax.set_xlabel("False Positive Rate"); ax.set_ylabel("True Positive Rate")
+    ax.set_title("ROC Curve")
+    ax.legend(loc="lower right", fontsize=9,
+              facecolor=PANEL2, edgecolor=BORDER, labelcolor=ACCENT)
+    ax.grid(True, alpha=0.3)
 
 
-# ─── Report Generator ─────────────────────────────────────────────────────────
+def plot_pr(ax, y_test, probs, ap, baseline):
+    prec, rec, _ = precision_recall_curve(y_test, probs)
+    ax.plot(rec, prec, color=DANGER, lw=2, label=f"AP = {ap:.3f}")
+    ax.axhline(baseline, color=BORDER, lw=1, linestyle="--",
+               label=f"Baseline = {baseline:.3f}")
+    ax.fill_between(rec, prec, alpha=0.08, color=DANGER)
+    ax.set_xlim([0, 1]); ax.set_ylim([0, 1.02])
+    ax.set_xlabel("Recall (Sensitivity)"); ax.set_ylabel("Precision")
+    ax.set_title("Precision-Recall Curve")
+    ax.legend(loc="lower left", fontsize=9,
+              facecolor=PANEL2, edgecolor=BORDER, labelcolor=TEXT_MID)
+    ax.grid(True, alpha=0.3)
 
-def generate_report(y_true, y_pred, y_prob, model_name: str, tag: str):
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n{'═'*55}")
-    print(f"  {model_name} — Evaluation Report")
-    print(f"{'═'*55}")
-    print(classification_report(y_true, y_pred,
-                                  target_names=["Normal", "AFib"],
-                                  zero_division=0))
-
-    # ── Plot 1: ROC + PR + Confusion Matrix + Threshold sweep ──
-    fig = plt.figure(figsize=(16, 10))
-    fig.patch.set_facecolor(COLORS["bg"])
-    gs = gridspec.GridSpec(2, 3, figure=fig, hspace=0.45, wspace=0.35)
-
-    # ROC Curve
-    ax1 = fig.add_subplot(gs[0, 0])
-    _style_ax(ax1)
-    fpr, tpr, thresholds = roc_curve(y_true, y_prob)
-    roc_auc_val = auc(fpr, tpr)
-    ax1.plot(fpr, tpr, color=COLORS["accent"], lw=2,
-             label=f"AUC = {roc_auc_val:.3f}")
-    ax1.plot([0, 1], [0, 1], '--', color=COLORS["border"], lw=1)
-    ax1.fill_between(fpr, tpr, alpha=0.1, color=COLORS["accent"])
-    ax1.set_xlabel("False Positive Rate")
-    ax1.set_ylabel("True Positive Rate")
-    ax1.set_title("ROC Curve")
-    ax1.legend(facecolor=COLORS["panel"], labelcolor=COLORS["text"])
-    ax1.set_xlim([0, 1]); ax1.set_ylim([0, 1.02])
-
-    # Precision-Recall
-    ax2 = fig.add_subplot(gs[0, 1])
-    _style_ax(ax2)
-    precision, recall, pr_thresh = precision_recall_curve(y_true, y_prob)
-    ap = average_precision_score(y_true, y_prob)
-    baseline = y_true.mean()
-    ax2.plot(recall, precision, color=COLORS["danger"], lw=2,
-             label=f"AP = {ap:.3f}")
-    ax2.axhline(baseline, linestyle='--', color=COLORS["border"],
-                label=f"Baseline = {baseline:.3f}")
-    ax2.fill_between(recall, precision, alpha=0.1, color=COLORS["danger"])
-    ax2.set_xlabel("Recall (Sensitivity)")
-    ax2.set_ylabel("Precision")
-    ax2.set_title("Precision-Recall Curve")
-    ax2.legend(facecolor=COLORS["panel"], labelcolor=COLORS["text"])
-    ax2.set_xlim([0, 1]); ax2.set_ylim([0, 1.05])
-
-    # Confusion Matrix
-    ax3 = fig.add_subplot(gs[0, 2])
-    _style_ax(ax3)
-    cm = confusion_matrix(y_true, y_pred)
-    im = ax3.imshow(cm, cmap='Blues', aspect='auto')
-    ax3.set_xticks([0, 1]); ax3.set_yticks([0, 1])
-    ax3.set_xticklabels(["Normal", "AFib"], color=COLORS["text"])
-    ax3.set_yticklabels(["Normal", "AFib"], color=COLORS["text"])
-    ax3.set_xlabel("Predicted")
-    ax3.set_ylabel("Actual")
-    ax3.set_title("Confusion Matrix")
+def plot_confusion(ax, cm, tn, fp, fn, tp):
+    cmap = LinearSegmentedColormap.from_list("cs", [PANEL, ACCENT], N=256)
+    ax.imshow(cm, cmap=cmap, aspect="auto")
+    ax.set_xticks([0, 1]); ax.set_yticks([0, 1])
+    ax.set_xticklabels(["Normal", "AFib"], color=TEXT)
+    ax.set_yticklabels(["Normal", "AFib"], color=TEXT)
+    ax.set_xlabel("Predicted"); ax.set_ylabel("Actual")
+    ax.set_title("Confusion Matrix")
+    vals = [[tn, fp], [fn, tp]]
+    clrs = [[SUCCESS, DANGER], [DANGER, SUCCESS]]
     for i in range(2):
         for j in range(2):
-            # Diagonal = correct (white), off-diagonal = wrong (red)
-            text_color = 'white' if i == j else COLORS["danger"]
-            ax3.text(j, i, f"{cm[i,j]:,}", ha='center', va='center',
-                     color=text_color, fontsize=14, fontweight='bold')
-
-    # Threshold sweep
-    ax4 = fig.add_subplot(gs[1, 0:2])
-    _style_ax(ax4)
-    thresholds_sweep = np.linspace(0.1, 0.9, 80)
-    sensitivities, specificities, f1s = [], [], []
-    for t in thresholds_sweep:
-        preds = (y_prob > t).astype(int)
-        tn, fp, fn, tp = confusion_matrix(y_true, preds, labels=[0,1]).ravel() \
-            if len(np.unique(preds)) > 1 else (0, 0, 0, 0)
-        sensitivities.append(tp / (tp + fn) if (tp + fn) > 0 else 0)
-        specificities.append(tn / (tn + fp) if (tn + fp) > 0 else 0)
-        f1s.append(f1_score(y_true, preds, zero_division=0))
-    ax4.plot(thresholds_sweep, sensitivities, color=COLORS["success"],  lw=2, label="Sensitivity (Recall)")
-    ax4.plot(thresholds_sweep, specificities, color=COLORS["accent"],   lw=2, label="Specificity")
-    ax4.plot(thresholds_sweep, f1s,           color=COLORS["danger"],   lw=2, label="F1 Score")
-    ax4.axvline(0.5, linestyle='--', color=COLORS["warn"], alpha=0.7, label="Default threshold (0.5)")
-    best_f1_idx = np.argmax(f1s)
-    ax4.axvline(thresholds_sweep[best_f1_idx], linestyle=':', color='white', alpha=0.5,
-                label=f"Best F1 threshold ({thresholds_sweep[best_f1_idx]:.2f})")
-    ax4.set_xlabel("Classification Threshold")
-    ax4.set_ylabel("Score")
-    ax4.set_title("Threshold Analysis — Tune sensitivity vs specificity for clinical use")
-    ax4.legend(facecolor=COLORS["panel"], labelcolor=COLORS["text"], fontsize=8)
-    ax4.set_xlim([0.1, 0.9]); ax4.set_ylim([0, 1.05])
-
-    # Summary text
-    ax5 = fig.add_subplot(gs[1, 2])
-    _style_ax(ax5)
-    ax5.axis('off')
-    tn, fp, fn, tp = cm.ravel()
-    sens = tp / (tp + fn) if (tp + fn) > 0 else 0
-    spec = tn / (tn + fp) if (tn + fp) > 0 else 0
-    ppv  = tp / (tp + fp) if (tp + fp) > 0 else 0
-    summary = (
-        f"  {model_name}\n\n"
-        f"  AUC-ROC:      {roc_auc_val:.4f}\n"
-        f"  Avg Precision:{ap:.4f}\n\n"
-        f"  Sensitivity:  {sens:.4f}\n"
-        f"  Specificity:  {spec:.4f}\n"
-        f"  Precision:    {ppv:.4f}\n"
-        f"  F1 Score:     {f1_score(y_true, y_pred, zero_division=0):.4f}\n\n"
-        f"  TP: {tp}   FP: {fp}\n"
-        f"  FN: {fn}   TN: {tn}\n\n"
-        f"  Test set: {len(y_true)} samples\n"
-        f"  AFib prevalence: {y_true.mean()*100:.1f}%"
-    )
-    ax5.text(0.05, 0.95, summary, transform=ax5.transAxes,
-             fontsize=9, verticalalignment='top', fontfamily='monospace',
-             color=COLORS["text"],
-             bbox=dict(facecolor=COLORS["panel"], edgecolor=COLORS["border"],
-                       boxstyle='round,pad=0.5'))
-
-    fig.suptitle(f"CardioSense — {model_name} Evaluation Report",
-                 color='white', fontsize=14, y=0.98)
-
-    out_path = RESULTS_DIR / f"evaluation_{tag}.png"
-    plt.savefig(out_path, dpi=130, bbox_inches='tight',
-                facecolor=fig.get_facecolor())
-    plt.close()
-    print(f"\n📊 Evaluation report saved → {out_path}")
-
-    # Save JSON
-    report_data = {
-        "model": model_name,
-        "roc_auc": float(roc_auc_val),
-        "avg_precision": float(ap),
-        "sensitivity": float(sens),
-        "specificity": float(spec),
-        "precision_ppv": float(ppv),
-        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
-        "best_f1_threshold": float(thresholds_sweep[best_f1_idx]),
-        "tp": int(tp), "fp": int(fp), "fn": int(fn), "tn": int(tn),
-        "test_size": int(len(y_true)),
-    }
-    with open(RESULTS_DIR / f"report_{tag}.json", "w") as f:
-        json.dump(report_data, f, indent=2)
+            ax.text(j, i, f"{vals[i][j]:,}",
+                    ha="center", va="center",
+                    fontsize=16, fontweight="bold", color=clrs[i][j])
 
 
-def _style_ax(ax):
-    ax.set_facecolor(COLORS["panel"])
-    ax.tick_params(colors=COLORS["text"], labelsize=8)
-    ax.xaxis.label.set_color(COLORS["text"])
-    ax.yaxis.label.set_color(COLORS["text"])
-    ax.title.set_color(COLORS["text"])
+def plot_threshold(ax, y_test, probs, best_thresh):
+    thresholds = np.arange(0.10, 0.91, 0.01)
+    sens, spec, f1s = [], [], []
+    for t in thresholds:
+        p  = (probs >= t).astype(int)
+        cm = confusion_matrix(y_test, p, labels=[0, 1])
+        tn_, fp_, fn_, tp_ = cm.ravel()
+        sens.append(tp_ / (tp_ + fn_ + 1e-8))
+        spec.append(tn_ / (tn_ + fp_ + 1e-8))
+        f1s.append(f1_score(y_test, p, zero_division=0))
+    ax.plot(thresholds, sens, color=SUCCESS, lw=2, label="Sensitivity (Recall)")
+    ax.plot(thresholds, spec, color=ACCENT,  lw=2, label="Specificity")
+    ax.plot(thresholds, f1s,  color=WARN,    lw=2, label="F1 Score")
+    ax.axvline(0.5,         color=TEXT_MID, lw=1, linestyle="--",
+               label="Default threshold (0.5)", alpha=0.6)
+    ax.axvline(best_thresh, color=WARN,     lw=1.5, linestyle="--",
+               label=f"Best F1 threshold ({best_thresh:.2f})", alpha=0.9)
+    ax.set_xlim([0.1, 0.9]); ax.set_ylim([0, 1.05])
+    ax.set_xlabel("Classification Threshold")
+    ax.set_ylabel("Score")
+    ax.set_title("Threshold Analysis — Tune sensitivity vs specificity for clinical use")
+    ax.legend(fontsize=8, facecolor=PANEL2, edgecolor=BORDER,
+              labelcolor=TEXT_MID, ncol=2)
+    ax.grid(True, alpha=0.3)
+
+
+def plot_feature_importance(ax, rf, top_n=10):
+    fi = pd.DataFrame({
+        "feature":    FEATURE_NAMES,
+        "importance": rf.feature_importances_,
+    }).sort_values("importance", ascending=True).tail(top_n)
+    colors = [ACCENT if i >= top_n - 3 else TEXT_MID for i in range(len(fi))]
+    bars = ax.barh(fi["feature"], fi["importance"],
+                   color=colors, edgecolor=BORDER, height=0.6)
+    ax.set_xlabel("Importance")
+    ax.set_title(f"Top {top_n} Feature Importances")
+    ax.grid(True, axis="x", alpha=0.3)
+    for bar, val in zip(bars, fi["importance"]):
+        ax.text(val + 0.001, bar.get_y() + bar.get_height() / 2,
+                f"{val:.4f}", va="center", fontsize=8, color=TEXT_MID)
+
+
+def plot_metrics_box(ax, report):
+    ax.axis("off")
+    ax.set_facecolor(PANEL2)
     for spine in ax.spines.values():
-        spine.set_edgecolor(COLORS["border"])
+        spine.set_edgecolor(BORDER)
+    lines = [
+        ("Random Forest",                                    TEXT,    11, "bold"),
+        ("",                                                 TEXT_MID, 9, "normal"),
+        (f"AUC-ROC:       {report['roc_auc']:.4f}",         ACCENT,  10, "normal"),
+        (f"Avg Precision:  {report['avg_precision']:.4f}",  TEXT_MID, 9, "normal"),
+        ("",                                                 TEXT_MID, 9, "normal"),
+        (f"Sensitivity:   {report['sensitivity']:.4f}",     SUCCESS, 10, "normal"),
+        (f"Specificity:   {report['specificity']:.4f}",     ACCENT,  10, "normal"),
+        (f"Precision:     {report['precision']:.4f}",       TEXT_MID, 9, "normal"),
+        (f"F1 Score:      {report['f1']:.4f}",              WARN,    10, "normal"),
+        ("",                                                 TEXT_MID, 9, "normal"),
+        (f"TP: {report['tp']}  FP: {report['fp']}",         SUCCESS,  9, "normal"),
+        (f"FN: {report['fn']}  TN: {report['tn']}",         DANGER,   9, "normal"),
+        ("",                                                 TEXT_MID, 9, "normal"),
+        (f"Test set: {report['n_test']} samples",           TEXT_MID, 8, "normal"),
+        (f"AFib prevalence: {report['afib_prev']:.1f}%",    TEXT_MID, 8, "normal"),
+    ]
+    y = 0.97
+    for text, color, size, weight in lines:
+        ax.text(0.05, y, text, transform=ax.transAxes,
+                fontsize=size, color=color, fontweight=weight,
+                verticalalignment="top", fontfamily="monospace")
+        y -= 0.067
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", choices=["rf", "cnn", "both"], default="both")
-    args = parser.parse_args()
+def evaluate():
+    bundle_path = SAVED_DIR / "rf_pipeline.pkl"
+    if not bundle_path.exists():
+        print("No model found. Run: python src/train.py")
+        return
 
-    if args.model in ("rf", "both"):  evaluate_rf()
-    if args.model in ("cnn", "both"): evaluate_cnn()
-    print("\n✓ Evaluation complete. Check models/results/")
+    bundle = joblib.load(bundle_path)
+    rf     = bundle["model"]
+    thresh = bundle["threshold"]
+    print(f"Loaded model — threshold={thresh:.2f}")
+
+    set_dark_style()
+    X_test, y_test = load_test_data(bundle)
+
+    probs = rf.predict_proba(X_test)[:, 1]
+    preds = (probs >= thresh).astype(int)
+    cm    = confusion_matrix(y_test, preds)
+    tn, fp, fn, tp = cm.ravel()
+
+    auc      = float(roc_auc_score(y_test, probs))
+    ap       = float(average_precision_score(y_test, probs))
+    baseline = float(np.mean(y_test))
+    prec_val = float(tp / (tp + fp + 1e-8))
+
+    report = {
+        "model":         "Random Forest (Explainable)",
+        "n_features":    len(FEATURE_NAMES),
+        "feature_names": FEATURE_NAMES,
+        "threshold":     float(thresh),
+        "n_test":        int(len(y_test)),
+        "afib_prev":     float(np.mean(y_test) * 100),
+        "roc_auc":       auc,
+        "avg_precision": ap,
+        "sensitivity":   float(tp / (tp + fn + 1e-8)),
+        "specificity":   float(tn / (tn + fp + 1e-8)),
+        "precision":     prec_val,
+        "f1":            float(f1_score(y_test, preds, zero_division=0)),
+        "tp": int(tp), "fp": int(fp), "fn": int(fn), "tn": int(tn),
+    }
+
+    print(f"\n{'='*50}")
+    print(f"  AUC-ROC:     {report['roc_auc']:.4f}")
+    print(f"  Sensitivity: {report['sensitivity']:.4f}  <- AFib recall")
+    print(f"  Specificity: {report['specificity']:.4f}")
+    print(f"  Precision:   {report['precision']:.4f}")
+    print(f"  F1:          {report['f1']:.4f}")
+    print(f"  TP={tp}  FP={fp}  FN={fn}  TN={tn}")
+    print(f"{'='*50}")
+
+    fig = plt.figure(figsize=(18, 11), facecolor=BG)
+    fig.suptitle("CardioSense — Random Forest Evaluation Report",
+                 fontsize=14, color=TEXT, fontweight="bold", y=0.98)
+
+    gs = gridspec.GridSpec(2, 4, figure=fig,
+                           hspace=0.42, wspace=0.35,
+                           top=0.93, bottom=0.07,
+                           left=0.06, right=0.97)
+
+    plot_roc(fig.add_subplot(gs[0, 0]), y_test, probs, auc)
+    plot_pr(fig.add_subplot(gs[0, 1]), y_test, probs, ap, baseline)
+    plot_confusion(fig.add_subplot(gs[0, 2]), cm, tn, fp, fn, tp)
+    plot_metrics_box(fig.add_subplot(gs[0, 3]), report)
+    plot_threshold(fig.add_subplot(gs[1, 0:3]), y_test, probs, thresh)
+    plot_feature_importance(fig.add_subplot(gs[1, 3]), rf, top_n=10)
+
+    out_path = RESULTS_DIR / "evaluation_rf.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight", facecolor=BG)
+    plt.close(fig)
+
+    with open(RESULTS_DIR / "report_rf.json", "w") as f:
+        json.dump(report, f, indent=2)
+
+    fi_df = pd.DataFrame({
+        "feature":    FEATURE_NAMES,
+        "importance": rf.feature_importances_,
+    }).sort_values("importance", ascending=False)
+    fi_df.to_csv(RESULTS_DIR / "feature_importance.csv", index=False)
+
+    print(f"\nSaved -> models/results/evaluation_rf.png")
+    print(f"Saved -> models/results/report_rf.json")
+    print(f"Saved -> models/results/feature_importance.csv")
+
+    print(f"\nTop 5 features:")
+    for _, row in fi_df.head(5).iterrows():
+        print(f"  {row['feature']:<25} {row['importance']:.4f}")
 
 
 if __name__ == "__main__":
-    main()
+    evaluate()

@@ -294,6 +294,14 @@ def load_data():
     X = np.array(X, dtype=np.float32)
     y = np.array(y, dtype=int)
     groups = np.array(groups, dtype=int)
+
+    # Replace NaN/Inf with column median — caused by edge cases in entropy/freq features
+    from sklearn.impute import SimpleImputer
+    imp = SimpleImputer(strategy="median")
+    X = imp.fit_transform(X).astype(np.float32)
+    # Replace any remaining Inf
+    X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
     print(f"Features extracted: {X.shape}  AFib={np.sum(y==1)}  Normal={np.sum(y==0)}")
     return X, y, groups
 
@@ -318,9 +326,26 @@ def train():
 
     print(f"\nTrain: {len(X_train)}  Val: {len(X_val)}  Test: {len(X_test)}")
 
+    # Clean NaN/Inf before SMOTE (caused by edge cases in entropy/freq features)
+    from sklearn.impute import SimpleImputer
+    imp = SimpleImputer(strategy="median")
+    X_train = imp.fit_transform(X_train).astype(np.float32)
+    X_val   = imp.transform(X_val).astype(np.float32)
+    X_test  = imp.transform(X_test).astype(np.float32)
+    X_train = np.nan_to_num(X_train, nan=0.0, posinf=0.0, neginf=0.0)
+    X_val   = np.nan_to_num(X_val,   nan=0.0, posinf=0.0, neginf=0.0)
+    X_test  = np.nan_to_num(X_test,  nan=0.0, posinf=0.0, neginf=0.0)
+
     # SMOTE oversampling on training set only
-    sm = SMOTE(sampling_strategy=0.8, random_state=42)
-    X_res, y_res = sm.fit_resample(X_train, y_train)
+    afib_count   = int(np.sum(y_train == 1))
+    normal_count = int(np.sum(y_train == 0))
+    print(f"Before SMOTE: AFib={afib_count}  Normal={normal_count}")
+    if afib_count < normal_count:
+        sm = SMOTE(sampling_strategy="auto", random_state=42)
+        X_res, y_res = sm.fit_resample(X_train, y_train)
+    else:
+        X_res, y_res = X_train, y_train
+        print("  Skipping SMOTE — classes already balanced")
     print(f"After SMOTE: {len(X_res)}  AFib={np.sum(y_res==1)}  Normal={np.sum(y_res==0)}")
 
     # Random Forest with class weighting
