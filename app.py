@@ -138,6 +138,43 @@ def load_results():
     return results
 
 
+# ─── History Helpers ──────────────────────────────────────────────────────────
+
+HISTORY_FILE = Path("data/history/sessions.json")
+
+def load_history():
+    """Load all past sessions from JSON file."""
+    try:
+        HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if HISTORY_FILE.exists():
+            with open(HISTORY_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+def save_session(record: dict):
+    """Append a new session record to history."""
+    try:
+        HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        history = load_history()
+        history.append(record)
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(history, f, indent=2)
+        return True
+    except Exception:
+        return False
+
+def delete_history():
+    """Wipe all history."""
+    try:
+        if HISTORY_FILE.exists():
+            HISTORY_FILE.unlink()
+        return True
+    except Exception:
+        return False
+
+
 # ─── Demo Signals ─────────────────────────────────────────────────────────────
 
 def load_real_demo(mode="normal"):
@@ -511,7 +548,7 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
-    tab1, tab_live, tab2, tab3 = st.tabs(["📡  Analysis", "🔴  Live Demo", "📊  Model Metrics", "🗄️  Dataset"])
+    tab1, tab_live, tab2, tab3, tab_hist = st.tabs(["📡  Analysis", "🔴  Live Demo", "📊  Model Metrics", "🗄️  Dataset", "📈  History"])
 
     # ══ TAB 1 — ANALYSIS ══════════════════════════════════════════════════════
     with tab1:
@@ -698,15 +735,22 @@ def main():
 
             # Download
             rep = {
-                "timestamp":      time.strftime("%Y-%m-%d %H:%M:%S"),
-                "classification": cls,
+                "timestamp":        time.strftime("%Y-%m-%d %H:%M:%S"),
+                "classification":   cls,
                 "afib_probability": prob,
-                "threshold_used": threshold,
-                "heart_rate":     result["heart_rate"],
-                "n_beats":        result["n_beats"],
-                "signal_quality": result["signal_quality"],
-                "hrv_features":   hrv,
+                "threshold_used":   threshold,
+                "heart_rate":       result["heart_rate"],
+                "n_beats":          result["n_beats"],
+                "signal_quality":   result["signal_quality"],
+                "hrv_features":     hrv,
+                "source":           mode,
             }
+
+            # Auto-save to history
+            _saved = save_session(rep)
+            if _saved:
+                st.caption("✓ Session saved to History")
+
             st.download_button(
                 "⬇  Download Analysis Report (JSON)",
                 data=json.dumps(rep, indent=2),
@@ -1059,6 +1103,237 @@ def main():
                 </div>
               </div>
             </div>""", unsafe_allow_html=True)
+
+
+    # ══ TAB HISTORY ═══════════════════════════════════════════════════════════
+    with tab_hist:
+        history = load_history()
+
+        st.markdown(f"""
+        <div style='display:flex; align-items:center; justify-content:space-between; margin-bottom:1rem;'>
+          <div>
+            <span style='font-family:"Sora",sans-serif; font-size:1.1rem; color:white; font-weight:700;'>
+              📈 Session History
+            </span>
+            <span style='font-size:0.78rem; color:{COLORS["text_mid"]}; margin-left:10px;'>
+              {len(history)} sessions recorded
+            </span>
+          </div>
+        </div>""", unsafe_allow_html=True)
+
+        if not history:
+            st.markdown(f"""
+            <div style='padding:60px 20px; text-align:center;'>
+              <div style='font-size:3rem; margin-bottom:12px;'>📋</div>
+              <div style='font-size:0.9rem; color:{COLORS["text_dim"]};'>
+                No sessions yet — run an analysis in the Analysis tab to start tracking
+              </div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            # ── Build dataframe ────────────────────────────────────────────────
+            rows = []
+            for s in history:
+                hrv_f = s.get("hrv_features", {})
+                rows.append({
+                    "timestamp":   s.get("timestamp", ""),
+                    "cls":         s.get("classification", ""),
+                    "prob":        s.get("afib_probability", 0),
+                    "hr":          s.get("heart_rate", 0),
+                    "rmssd":       hrv_f.get("rmssd", 0),
+                    "sdnn":        hrv_f.get("sdnn", 0),
+                    "signal_q":    s.get("signal_quality", ""),
+                    "source":      s.get("source", ""),
+                })
+            df = pd.DataFrame(rows)
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            df = df.sort_values("timestamp")
+
+            # ── Summary KPI row ────────────────────────────────────────────────
+            total     = len(df)
+            n_afib    = (df["cls"] == "AFib").sum()
+            n_normal  = (df["cls"] == "Normal").sum()
+            avg_hr    = df["hr"].mean()
+            avg_rmssd = df["rmssd"].mean()
+            last_cls  = df["cls"].iloc[-1]
+            streak    = 0
+            for c in reversed(df["cls"].tolist()):
+                if c == "Normal":
+                    streak += 1
+                else:
+                    break
+
+            k1, k2, k3, k4, k5 = st.columns(5)
+            k1.metric("Total Sessions", total)
+            k2.metric("AFib Episodes",  n_afib,
+                      delta="High" if n_afib > total * 0.3 else "Low",
+                      delta_color="inverse" if n_afib > total * 0.3 else "normal")
+            k3.metric("Normal Sessions", n_normal)
+            k4.metric("Avg Heart Rate",  f"{avg_hr:.0f} bpm")
+            k5.metric("Normal Streak",   f"{streak} sessions",
+                      delta="Good" if streak >= 3 else None)
+
+            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+            # ── Trend charts ──────────────────────────────────────────────────
+            col_a, col_b = st.columns(2)
+
+            with col_a:
+                # AFib probability over time
+                colors_prob = [COLORS["danger"] if p >= 0.65
+                               else COLORS["warn"] if p >= 0.35
+                               else COLORS["success"] for p in df["prob"]]
+                fig_prob = go.Figure()
+                fig_prob.add_hrect(y0=0,    y1=0.35, fillcolor="rgba(31,204,122,0.05)",  line_width=0)
+                fig_prob.add_hrect(y0=0.35, y1=0.65, fillcolor="rgba(244,161,36,0.05)",  line_width=0)
+                fig_prob.add_hrect(y0=0.65, y1=1.0,  fillcolor="rgba(240,64,96,0.05)",   line_width=0)
+                fig_prob.add_hline(y=0.65, line_dash="dash",
+                                   line_color=COLORS["danger"], opacity=0.5,
+                                   annotation_text="AFib threshold",
+                                   annotation_font=dict(color=COLORS["danger"], size=9))
+                fig_prob.add_trace(go.Scatter(
+                    x=df["timestamp"], y=df["prob"],
+                    mode="lines+markers",
+                    line=dict(color=COLORS["accent"], width=2),
+                    marker=dict(color=colors_prob, size=8,
+                                line=dict(color="white", width=1.5)),
+                    name="AFib Probability",
+                    hovertemplate="%{x|%d %b %H:%M}<br>Prob: %{y:.1%}<extra></extra>",
+                ))
+                fig_prob.update_layout(
+                    title=dict(text="AFib Probability Over Time",
+                               font=dict(family="Inter", size=12, color=COLORS["text_mid"])),
+                    xaxis=dict(color=COLORS["text_mid"], gridcolor=COLORS["border"],
+                               tickfont=dict(family="JetBrains Mono", size=9)),
+                    yaxis=dict(title="%", color=COLORS["text_mid"], gridcolor=COLORS["border"],
+                               range=[0, 1], tickformat=".0%",
+                               tickfont=dict(family="JetBrains Mono", size=9)),
+                    plot_bgcolor=COLORS["panel"], paper_bgcolor=COLORS["panel"],
+                    height=260, margin=dict(l=55, r=15, t=40, b=45),
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_prob, width="stretch")
+
+            with col_b:
+                # Heart Rate trend
+                fig_hr = go.Figure()
+                fig_hr.add_hrect(y0=60,  y1=100, fillcolor="rgba(31,204,122,0.05)", line_width=0)
+                fig_hr.add_hline(y=100, line_dash="dash", line_color=COLORS["warn"],
+                                 opacity=0.5, annotation_text="Tachycardia",
+                                 annotation_font=dict(color=COLORS["warn"], size=9))
+                fig_hr.add_hline(y=60,  line_dash="dash", line_color=COLORS["accent2"],
+                                 opacity=0.5, annotation_text="Bradycardia",
+                                 annotation_font=dict(color=COLORS["accent2"], size=9))
+                fig_hr.add_trace(go.Scatter(
+                    x=df["timestamp"], y=df["hr"],
+                    mode="lines+markers",
+                    line=dict(color=COLORS["accent2"], width=2),
+                    marker=dict(color=COLORS["accent2"], size=7,
+                                line=dict(color="white", width=1.5)),
+                    name="Heart Rate",
+                    hovertemplate="%{x|%d %b %H:%M}<br>HR: %{y:.0f} bpm<extra></extra>",
+                ))
+                fig_hr.update_layout(
+                    title=dict(text="Heart Rate Over Time",
+                               font=dict(family="Inter", size=12, color=COLORS["text_mid"])),
+                    xaxis=dict(color=COLORS["text_mid"], gridcolor=COLORS["border"],
+                               tickfont=dict(family="JetBrains Mono", size=9)),
+                    yaxis=dict(title="bpm", color=COLORS["text_mid"], gridcolor=COLORS["border"],
+                               tickfont=dict(family="JetBrains Mono", size=9)),
+                    plot_bgcolor=COLORS["panel"], paper_bgcolor=COLORS["panel"],
+                    height=260, margin=dict(l=55, r=15, t=40, b=45),
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_hr, width="stretch")
+
+            col_c, col_d = st.columns(2)
+
+            with col_c:
+                # RMSSD trend — higher = more variable = more AFib risk
+                fig_rmssd = go.Figure()
+                fig_rmssd.add_hline(y=80, line_dash="dash", line_color=COLORS["warn"],
+                                    opacity=0.5, annotation_text="AFib risk zone",
+                                    annotation_font=dict(color=COLORS["warn"], size=9))
+                fig_rmssd.add_trace(go.Scatter(
+                    x=df["timestamp"], y=df["rmssd"],
+                    mode="lines+markers",
+                    line=dict(color=COLORS["warn"], width=2),
+                    marker=dict(color=COLORS["warn"], size=7,
+                                line=dict(color="white", width=1.5)),
+                    fill="tozeroy", fillcolor="rgba(244,161,36,0.05)",
+                    hovertemplate="%{x|%d %b %H:%M}<br>RMSSD: %{y:.1f}ms<extra></extra>",
+                ))
+                fig_rmssd.update_layout(
+                    title=dict(text="RMSSD Trend  (elevated = irregular rhythm)",
+                               font=dict(family="Inter", size=12, color=COLORS["text_mid"])),
+                    xaxis=dict(color=COLORS["text_mid"], gridcolor=COLORS["border"],
+                               tickfont=dict(family="JetBrains Mono", size=9)),
+                    yaxis=dict(title="ms", color=COLORS["text_mid"], gridcolor=COLORS["border"],
+                               tickfont=dict(family="JetBrains Mono", size=9)),
+                    plot_bgcolor=COLORS["panel"], paper_bgcolor=COLORS["panel"],
+                    height=260, margin=dict(l=55, r=15, t=40, b=45),
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_rmssd, width="stretch")
+
+            with col_d:
+                # Classification distribution donut
+                cls_counts = df["cls"].value_counts()
+                fig_donut = go.Figure(go.Pie(
+                    labels=cls_counts.index.tolist(),
+                    values=cls_counts.values.tolist(),
+                    hole=0.55,
+                    marker=dict(colors=[
+                        COLORS["danger"]  if l == "AFib"       else
+                        COLORS["warn"]    if l == "Borderline" else
+                        COLORS["success"] for l in cls_counts.index
+                    ],
+                    line=dict(color=COLORS["panel"], width=2)),
+                    textfont=dict(family="Inter", size=11, color="white"),
+                    hovertemplate="%{label}: %{value} sessions (%{percent})<extra></extra>",
+                ))
+                fig_donut.update_layout(
+                    title=dict(text="Classification Breakdown",
+                               font=dict(family="Inter", size=12, color=COLORS["text_mid"])),
+                    paper_bgcolor=COLORS["panel"],
+                    legend=dict(font=dict(family="Inter", size=11, color=COLORS["text"]),
+                                bgcolor="rgba(0,0,0,0)"),
+                    height=260, margin=dict(l=15, r=15, t=40, b=15),
+                    annotations=[dict(
+                        text=f"{n_afib/total*100:.0f}%<br>AFib",
+                        x=0.5, y=0.5, font=dict(size=16, color=COLORS["danger"],
+                                                  family="JetBrains Mono"),
+                        showarrow=False
+                    )]
+                )
+                st.plotly_chart(fig_donut, width="stretch")
+
+            # ── Session log table ──────────────────────────────────────────────
+            st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+            st.markdown(f'<div class="cs-label">Session Log</div>', unsafe_allow_html=True)
+
+            display_df = df[["timestamp","cls","prob","hr","rmssd","sdnn","signal_q"]].copy()
+            display_df.columns = ["Time","Classification","AFib Prob","Heart Rate","RMSSD","SDNN","Signal Quality"]
+            display_df["Time"]      = display_df["Time"].dt.strftime("%d %b %Y  %H:%M")
+            display_df["AFib Prob"] = display_df["AFib Prob"].apply(lambda x: f"{x*100:.1f}%")
+            display_df["Heart Rate"]= display_df["Heart Rate"].apply(lambda x: f"{x:.0f} bpm")
+            display_df["RMSSD"]     = display_df["RMSSD"].apply(lambda x: f"{x:.1f} ms")
+            display_df["SDNN"]      = display_df["SDNN"].apply(lambda x: f"{x:.1f} ms")
+            st.dataframe(display_df.iloc[::-1].reset_index(drop=True),
+                         use_container_width=True, hide_index=True)
+
+            # ── Export + Clear ─────────────────────────────────────────────────
+            ex1, ex2, _ = st.columns([1, 1, 4])
+            with ex1:
+                st.download_button(
+                    "⬇  Export Full History (JSON)",
+                    data=json.dumps(history, indent=2),
+                    file_name=f"cardiosense_history_{time.strftime('%Y%m%d')}.json",
+                    mime="application/json",
+                )
+            with ex2:
+                if st.button("🗑  Clear History", key="clear_hist"):
+                    delete_history()
+                    st.rerun()
 
 
 if __name__ == "__main__":
