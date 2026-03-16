@@ -802,27 +802,32 @@ def main():
 
             # HRV table
             with st.expander("📋  Full HRV Feature Report", expanded=False):
-                descs = [
-                    "Mean RR interval (ms)",
-                    "Standard deviation of RR intervals",
-                    "Root Mean Square Successive Differences — key AFib indicator",
-                    "Proportion of successive differences > 50ms",
-                    "Coefficient of variation of RR",
-                    "Mean heart rate (bpm)",
-                    "Poincaré SD1 — short-term HRV",
-                    "Poincaré SD2 — long-term HRV",
-                    "SD1/SD2 ratio",
-                    "Sample entropy",
-                    "Histogram entropy of RR",
-                    "Proportion short RR intervals",
-                    "Proportion long RR intervals",
-                    "Count of RR diffs > 50ms",
-                    "Number of detected beats",
-                ]
+                desc_map = {
+                    "mean_rr":             "Mean RR interval (ms)",
+                    "sdnn":                "Standard deviation of RR intervals",
+                    "rmssd":               "Root Mean Square Successive Differences — key AFib indicator",
+                    "pnn50":               "Proportion of successive differences > 50ms",
+                    "cv":                  "Coefficient of variation of RR",
+                    "mean_hr":             "Mean heart rate (bpm)",
+                    "sd1":                 "Poincare SD1 — short-term HRV",
+                    "sd2":                 "Poincare SD2 — long-term HRV",
+                    "sd1_sd2_ratio":       "SD1/SD2 ratio",
+                    "sample_entropy":      "Sample entropy — unpredictability",
+                    "approx_entropy":      "Approximate entropy",
+                    "turning_point_ratio": "Fraction of turning points",
+                    "dominant_freq":       "Dominant frequency in RR spectrum",
+                    "spectral_entropy":    "Spectral entropy — flatness of spectrum",
+                    "p_wave_absence":      "P-wave absence score — key AFib morphology marker",
+                    "qrs_width":           "QRS complex width (ms)",
+                    "t_wave_ratio":        "T-wave energy relative to QRS",
+                    "rr_skewness":         "Skewness of RR distribution",
+                    "rr_kurtosis":         "Kurtosis of RR distribution",
+                    "rr_range":            "Range of RR intervals (max - min)",
+                }
                 fd = {
                     "Feature":     list(hrv.keys()),
                     "Value":       [f"{v:.4f}" for v in hrv.values()],
-                    "Description": descs[:len(hrv)],
+                    "Description": [desc_map.get(k, "") for k in hrv.keys()],
                 }
                 st.dataframe(pd.DataFrame(fd), use_container_width=True, hide_index=True)
 
