@@ -174,6 +174,14 @@ def delete_history():
 # ─── Demo Signals ─────────────────────────────────────────────────────────────
 
 def load_real_demo(mode="normal"):
+    # Load pre-validated demo segments (prob=0.986 AFib, prob=0.000 Normal)
+    try:
+        path = Path("demo_afib.npy") if mode == "afib" else Path("demo_normal.npy")
+        if path.exists():
+            return np.load(path).astype(np.float32)
+    except Exception:
+        pass
+    # Fallback to full processed data if demo files not found
     try:
         signals = np.load(Path("data/processed/signals.npy"))
         labels  = np.load(Path("data/processed/labels.npy"))
@@ -629,6 +637,7 @@ def main():
             with st.spinner("Loading PhysioNet ECG segment..."):
                 signal = load_real_demo(demo_mode)
                 if signal is None:
+                    st.warning("Real PhysioNet data not found on server — using synthetic signal. SHAP may look odd.")
                     signal = generate_demo_signal(30, demo_mode)
                     st.info(f"Using synthetic {demo_mode.upper()} ECG (30s @ {fs} Hz)")
                 else:
