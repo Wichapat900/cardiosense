@@ -102,7 +102,7 @@ def predict(signal: np.ndarray, fs: int = SAMPLE_RATE) -> dict:
     else:
         shap_afib = shap_vals[0]
 
-    shap_dict = {name: float(val)
+    shap_dict = {name: float(np.array(val).flatten()[0])
                  for name, val in zip(FEATURE_NAMES, shap_afib)}
 
     base_val = float(explainer.expected_value[1]
