@@ -645,15 +645,6 @@ def main():
         if signal is not None and len(signal) > fs * 5:
             result   = run_inference(signal, fs)
 
-            # Demo override: if we're in AFib demo mode, force the result to AFib
-            # The heuristic fallback is unreliable without the real model
-            _demo = st.session_state.get("demo_mode", None)
-            if _demo == "afib":
-                result["afib_probability"] = 0.87
-                result["classification"]   = "AFib"
-            elif _demo == "normal" and result["afib_probability"] > 0.35:
-                result["afib_probability"] = 0.08
-                result["classification"]   = "Normal"
 
             prob     = result["afib_probability"]
             cls      = result["classification"]
