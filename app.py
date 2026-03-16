@@ -641,7 +641,12 @@ def main():
                     signal = generate_demo_signal(30, demo_mode)
                     st.info(f"Using synthetic {demo_mode.upper()} ECG (30s @ {fs} Hz)")
                 else:
-                    st.info(f"Using real PhysioNet **{demo_mode.upper()}** ECG segment (30s @ {fs} Hz)")
+                    if demo_mode == "normal":
+                        st.info("Using real PhysioNet **NORMAL** ECG segment (30s @ 250 Hz)  ·  "
+                                "Segment #51  ·  Patient record **04015**  ·  Label: Normal")
+                    else:
+                        st.info("Using real PhysioNet **AFIB** ECG segment (30s @ 250 Hz)  ·  "
+                                "Segment #3416  ·  Patient record **04043**  ·  Label: AFib")
 
         elif mode == "Live Serial":
             st.markdown(f"""
