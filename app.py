@@ -465,7 +465,10 @@ def run_inference(signal, fs=SAMPLE_RATE):
     try:
         from predict import predict
         return predict(signal, fs)
-    except Exception:
+    except Exception as e:
+        st.error(f"⚠️ predict.py failed: {e}")
+        import traceback
+        st.code(traceback.format_exc())
         from scipy.signal import find_peaks, butter, filtfilt
         nyq = fs / 2
         b, a = butter(4, [0.5 / nyq, 40.0 / nyq], btype="band")
