@@ -71,10 +71,20 @@ def predict(signal: np.ndarray, fs: int = SAMPLE_RATE) -> dict:
     else:
         arr = np.array(shap_vals)
         if arr.ndim == 3:
-            # New shap: (n_samples, n_features, n_classes)
-            shap_afib = arr[0, :, 1]
+            # Try both axis orderings and pick the one with correct sign
+            # (n_samples, n_features, n_classes) -> arr[0, :, 1]
+            # (n_samples, n_classes, n_features) -> arr[0, 1, :]
+            option_a = arr[0, :, 1]   # shape (n_features,)
+            option_b = arr[0, 1, :]   # shape (n_features,)
+            # Correct one should have same sign as (prob - base_value)
+            ev_tmp = np.array(explainer.expected_value).flatten()
+            base_tmp = float(ev_tmp[1]) if len(ev_tmp) > 1 else float(ev_tmp[0])
+            expected_sign = 1 if prob > base_tmp else -1
+            sum_a = np.sum(option_a)
+            sum_b = np.sum(option_b)
+            # Pick whichever sum has the correct sign relative to prob vs base
+            shap_afib = option_a if (sum_a * expected_sign >= sum_b * expected_sign) else option_b
         elif arr.ndim == 2:
-            # (n_classes, n_features)
             shap_afib = arr[1].flatten()
         else:
             shap_afib = arr.flatten()
