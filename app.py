@@ -301,7 +301,7 @@ def plot_ecg_clinical(signal, fs=SAMPLE_RATE, r_peaks=None, title="ECG Lead I", 
                 gridcolor="rgba(210,50,50,0.12)",
                 gridwidth=1,
                 showgrid=True,
-                showticklabels=False,
+
             ),
             range=[0, duration],
             tickfont=dict(family="JetBrains Mono", size=10, color=COLORS["text_mid"]),
