@@ -290,20 +290,22 @@ def plot_ecg_clinical(signal, fs=SAMPLE_RATE, r_peaks=None, title="ECG Lead I", 
         xaxis=dict(
             title="Time (s)",
             color=COLORS["text_mid"],
-            # Large square = 0.2 s (standard ECG paper)
+            # Major grid = 0.2 s large square — bold line
             dtick=0.2,
-            gridcolor="rgba(210,50,50,0.30)",
-            gridwidth=1,
+            gridcolor="rgba(210,50,50,0.45)",
+            gridwidth=2,
             showgrid=True,
-            # Small square = 0.04 s
+            # Minor grid = 0.04 s small square — thin faint line
             minor=dict(
                 dtick=0.04,
-                gridcolor="rgba(210,50,50,0.10)",
+                gridcolor="rgba(210,50,50,0.12)",
+                gridwidth=1,
                 showgrid=True,
+                showticklabels=False,
             ),
             range=[0, duration],
             tickfont=dict(family="JetBrains Mono", size=10, color=COLORS["text_mid"]),
-            # Only label every 1.0 s to avoid crowding
+            # Label only every 1.0 s — clean, uncluttered
             tick0=0,
             tickmode="linear",
             tickvals=np.arange(0, duration + 0.01, 1.0).tolist(),
@@ -311,19 +313,21 @@ def plot_ecg_clinical(signal, fs=SAMPLE_RATE, r_peaks=None, title="ECG Lead I", 
         yaxis=dict(
             title="mV",
             color=COLORS["text_mid"],
-            # Large square = 0.5 mV
+            # Major grid = 0.5 mV large square — bold line
             dtick=0.5,
-            gridcolor="rgba(210,50,50,0.30)",
-            gridwidth=1,
+            gridcolor="rgba(210,50,50,0.45)",
+            gridwidth=2,
             showgrid=True,
-            # Small square = 0.1 mV
+            # Minor grid = 0.1 mV small square — thin faint line
             minor=dict(
                 dtick=0.1,
-                gridcolor="rgba(210,50,50,0.10)",
+                gridcolor="rgba(210,50,50,0.12)",
+                gridwidth=1,
                 showgrid=True,
+                showticklabels=False,
             ),
-            # Standard clinical display range: -1 to +2 mV
-            range=[-1.0, 2.0],
+            # Extended range so negative deflections (S-wave, T-wave) don't clip
+            range=[-1.5, 2.0],
             tickfont=dict(family="JetBrains Mono", size=10, color=COLORS["text_mid"]),
         ),
         plot_bgcolor=COLORS["ecg_bg"],
@@ -1010,10 +1014,11 @@ def main():
             ),
             xaxis=dict(
                 title="Time (s)", color="#7a9bb8",
-                # Correct ECG grid: large=0.2s, small=0.04s
+                # Major = 0.2 s bold, minor = 0.04 s faint
                 dtick=0.2,
-                gridcolor="rgba(210,50,50,0.25)", gridwidth=1, showgrid=True,
-                minor=dict(dtick=0.04, gridcolor="rgba(210,50,50,0.08)", showgrid=True),
+                gridcolor="rgba(210,50,50,0.45)", gridwidth=2, showgrid=True,
+                minor=dict(dtick=0.04, gridcolor="rgba(210,50,50,0.12)", gridwidth=1,
+                           showgrid=True, showticklabels=False),
                 range=[0, window_sec], fixedrange=True,
                 tick0=0, tickmode="linear",
                 tickvals=np.arange(0, window_sec + 0.01, 1.0).tolist(),
@@ -1021,11 +1026,12 @@ def main():
             ),
             yaxis=dict(
                 title="mV", color="#7a9bb8",
-                # Correct ECG grid: large=0.5mV, small=0.1mV
+                # Major = 0.5 mV bold, minor = 0.1 mV faint
                 dtick=0.5,
-                gridcolor="rgba(210,50,50,0.25)", gridwidth=1, showgrid=True,
-                minor=dict(dtick=0.1, gridcolor="rgba(210,50,50,0.08)", showgrid=True),
-                range=[-1.0, 2.0], fixedrange=True,
+                gridcolor="rgba(210,50,50,0.45)", gridwidth=2, showgrid=True,
+                minor=dict(dtick=0.1, gridcolor="rgba(210,50,50,0.12)", gridwidth=1,
+                           showgrid=True, showticklabels=False),
+                range=[-1.5, 2.0], fixedrange=True,
                 tickfont=dict(family="JetBrains Mono", size=10, color="#7a9bb8"),
             ),
             plot_bgcolor="#fff8f0",
