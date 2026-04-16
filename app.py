@@ -184,7 +184,7 @@ def load_real_demo(mode="normal"):
         indices = np.where(labels == target)[0]
         if len(indices) == 0:
             return None
-        rng = np.random.default_rng(0 if mode == "normal" else 99)
+        rng = np.random.default_rng(42 if mode == "normal" else 99)
         idx = rng.choice(indices)
         return signals[idx].astype(np.float32)
     except Exception:
@@ -285,49 +285,55 @@ def plot_ecg_clinical(signal, fs=SAMPLE_RATE, r_peaks=None, title="ECG Lead I", 
 
     duration = len(disp_signal) / orig_fs
 
+    # Only label x-axis at whole seconds; gridlines still drawn every 0.2s by dtick
+    ws_vals = np.arange(0, duration + 0.01, 1.0).tolist()
+    ws_text = [str(int(v)) for v in ws_vals]
+
     fig.update_layout(
         title=dict(text=title, font=dict(family="Inter", size=12, color=COLORS["text_mid"]), x=0.01),
         xaxis=dict(
             title="Time (s)",
             color=COLORS["text_mid"],
-            # Major grid = 0.2 s large square — bold line
+            # Major gridline every 0.2 s (1 large ECG square) — thick bold
             dtick=0.2,
-            gridcolor="rgba(210,50,50,0.45)",
+            gridcolor="rgba(210,50,50,0.50)",
             gridwidth=2,
             showgrid=True,
-            # Minor grid = 0.04 s small square — thin faint line
+            # Minor gridline every 0.04 s (5 small squares per large) — thin faint
             minor=dict(
                 dtick=0.04,
-                gridcolor="rgba(210,50,50,0.12)",
+                gridcolor="rgba(210,50,50,0.13)",
                 gridwidth=1,
                 showgrid=True,
-
+                showticklabels=False,
             ),
             range=[0, duration],
-            tickfont=dict(family="JetBrains Mono", size=10, color=COLORS["text_mid"]),
-            # Label only every 1.0 s — clean, uncluttered
-            tick0=0,
-            tickmode="linear",
-            tickvals=np.arange(0, duration + 0.01, 1.0).tolist(),
+            # tickmode array means ONLY these positions get labels — no auto extras
+            tickmode="array",
+            tickvals=ws_vals,
+            ticktext=ws_text,
+            tickfont=dict(family="JetBrains Mono", size=11, color=COLORS["text_mid"]),
         ),
         yaxis=dict(
             title="mV",
             color=COLORS["text_mid"],
-            # Major grid = 0.5 mV large square — bold line
+            # Major gridline every 0.5 mV — thick bold
             dtick=0.5,
-            gridcolor="rgba(210,50,50,0.45)",
+            gridcolor="rgba(210,50,50,0.50)",
             gridwidth=2,
             showgrid=True,
-            # Minor grid = 0.1 mV small square — thin faint line
+            # Minor gridline every 0.1 mV — thin faint
             minor=dict(
                 dtick=0.1,
-                gridcolor="rgba(210,50,50,0.12)",
+                gridcolor="rgba(210,50,50,0.13)",
                 gridwidth=1,
                 showgrid=True,
-
+                showticklabels=False,
             ),
-            # Extended range so negative deflections (S-wave, T-wave) don't clip
             range=[-1.5, 2.0],
+            tickmode="array",
+            tickvals=[-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0],
+            ticktext=["-1.5", "-1.0", "-0.5", "0", "0.5", "1.0", "1.5", "2.0"],
             tickfont=dict(family="JetBrains Mono", size=10, color=COLORS["text_mid"]),
         ),
         plot_bgcolor=COLORS["ecg_bg"],
@@ -1014,24 +1020,26 @@ def main():
             ),
             xaxis=dict(
                 title="Time (s)", color="#7a9bb8",
-                # Major = 0.2 s bold, minor = 0.04 s faint
                 dtick=0.2,
-                gridcolor="rgba(210,50,50,0.45)", gridwidth=2, showgrid=True,
-                minor=dict(dtick=0.04, gridcolor="rgba(210,50,50,0.12)", gridwidth=1,
-                           showgrid=True),
+                gridcolor="rgba(210,50,50,0.50)", gridwidth=2, showgrid=True,
+                minor=dict(dtick=0.04, gridcolor="rgba(210,50,50,0.13)", gridwidth=1,
+                           showgrid=True, showticklabels=False),
                 range=[0, window_sec], fixedrange=True,
-                tick0=0, tickmode="linear",
+                tickmode="array",
                 tickvals=np.arange(0, window_sec + 0.01, 1.0).tolist(),
-                tickfont=dict(family="JetBrains Mono", size=10, color="#7a9bb8"),
+                ticktext=[str(int(v)) for v in np.arange(0, window_sec + 0.01, 1.0)],
+                tickfont=dict(family="JetBrains Mono", size=11, color="#7a9bb8"),
             ),
             yaxis=dict(
                 title="mV", color="#7a9bb8",
-                # Major = 0.5 mV bold, minor = 0.1 mV faint
                 dtick=0.5,
-                gridcolor="rgba(210,50,50,0.45)", gridwidth=2, showgrid=True,
-                minor=dict(dtick=0.1, gridcolor="rgba(210,50,50,0.12)", gridwidth=1,
-                           showgrid=True),
+                gridcolor="rgba(210,50,50,0.50)", gridwidth=2, showgrid=True,
+                minor=dict(dtick=0.1, gridcolor="rgba(210,50,50,0.13)", gridwidth=1,
+                           showgrid=True, showticklabels=False),
                 range=[-1.5, 2.0], fixedrange=True,
+                tickmode="array",
+                tickvals=[-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0],
+                ticktext=["-1.5", "-1.0", "-0.5", "0", "0.5", "1.0", "1.5", "2.0"],
                 tickfont=dict(family="JetBrains Mono", size=10, color="#7a9bb8"),
             ),
             plot_bgcolor="#fff8f0",
