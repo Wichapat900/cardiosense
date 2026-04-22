@@ -1014,7 +1014,7 @@ def main():
             xaxis=dict(
                 title="Time (s)", color="#7a9bb8",
                 gridcolor="rgba(210,50,50,0.20)", gridwidth=1,
-                dtick=1.0, showgrid=True,
+                dtick=0.4, showgrid=True,
                 minor=dict(dtick=0.2, gridcolor="rgba(210,50,50,0.08)", showgrid=True),
                 range=[0, window_sec], fixedrange=True,
                 tickfont=dict(family="JetBrains Mono", size=10, color="#7a9bb8"),
